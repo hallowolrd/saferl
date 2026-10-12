@@ -42,9 +42,9 @@ N_EPISODES = 200
 
 # Which RQs to run (comment out / remove to skip)
 ENABLED_RQS = {
-    "rq1": True,  # Main comparison: 7 algos x 4 scenarios (already completed)
-    "rq2": False,   # Robustness: 6 algos x 7 extremity levels x 5 seeds = 210 runs
-    "rq3": False,  # Transfer: 3 tasks x 4 methods
+    "rq1": False,  # Main comparison: 7 algos x 4 scenarios (already completed)
+    "rq2": False,  # Robustness: 6 algos x 7 extremity levels x 5 seeds = 210 runs
+    "rq3": True,   # Transfer: 4 tasks x 5 arms x 5 seeds = 100 runs
     "rq4": False,  # Ablation: 4 variants on S4
     "rq5": False,  # Sensitivity: 3 axes x 5 values on S2
 }
@@ -57,12 +57,12 @@ SKIP_EXISTING = True
 N_WORKERS = 6
 
 # Output directory
-OUTPUT_DIR = ROOT / "outputs" / "rq1_GPU" / "full_v3"
+OUTPUT_DIR = ROOT / "outputs" / "experiments"
 
 # Device: "auto" | "cpu" | "cuda"
 # CPU is faster for these tiny models (256x256 MLP, 8-9 dim input) —
 # GPU kernel launch overhead dominates compute.
-DEVICE = "cuda"
+DEVICE = "cpu"
 
 # ============================================================================
 # Experiment matrices (do not edit unless you know what you're doing)
@@ -70,27 +70,21 @@ DEVICE = "cuda"
 
 RQ1_ALGORITHMS = [
     "sac", "ppo", "ppo_lagrangian", "cpo",
-    "safety_layer", "hfg_sac",
+    "safety_layer", "fuzzy_sac", "hfg_sac",
 ]
 RQ1_SCENARIOS = [
     "S1_grid_normal", "S2_grid_extreme",
     "S3_island_normal", "S4_island_extreme",
 ]
 
-RQ2_ALGORITHMS = ["sac", "ppo_lagrangian", "cpo", "safety_layer", "hfg_sac"]
+RQ2_ALGORITHMS = ["sac", "ppo_lagrangian", "cpo", "safety_layer", "fuzzy_sac", "hfg_sac"]
 RQ2_LEVELS = [0.8, 1.0, 1.1, 1.2, 1.3, 1.4, 1.5]
 
 RQ3_TASKS = {
-    # T1: grid normal -> grid extreme, same battery band
-    "T1_grid_same": {
-        "source": {"env_mode": "grid_connected",
-                   "scenario_name": "typical_week_summer",
-                   "extreme_multiplier": None},
-        "target": {"env_mode": "grid_connected",
-                   "scenario_name": "summer_extreme",
-                   "extreme_multiplier": {"pv": 1.2, "load": 1.3, "wt": 0.6}},
-    },
-    # T2: grid normal -> grid extreme, target battery band narrowed to [0.4, 0.7]
+    # T2: grid summer normal -> grid summer extreme, band narrowed [0.3,0.7] -> [0.4,0.7].
+    # M1 showcase: upper band unchanged (sim=1.0, transferable), lower band tightened
+    # (sim ~0.6-0.7, adaptable).  Grid mode has no hard freq/voltage constraints,
+    # so M4 is expected to fire rarely; T2 isolates M1's classification value.
     "T2_grid_shifted": {
         "source": {"env_mode": "grid_connected",
                    "scenario_name": "typical_week_summer",
@@ -100,7 +94,8 @@ RQ3_TASKS = {
                    "extreme_multiplier": {"pv": 1.2, "load": 1.3, "wt": 0.6},
                    "soc_optimal_min": 0.4, "soc_optimal_max": 0.7},
     },
-    # T3: island normal -> island extreme, same battery band
+    # T3: island normal -> island extreme, same battery band [0.3, 0.8]
+    # Tests M3 weight transfer under identical safety specs (M1 sim=1.0).
     "T3_island_same": {
         "source": {"env_mode": "islanded",
                    "scenario_name": "typical_week_summer",
@@ -118,6 +113,7 @@ RQ3_TASKS = {
                    "load_shed_cost": 1.0},
     },
     # T4: island normal -> island extreme, target battery band narrowed to [0.4, 0.7]
+    # Tests M4 conservative scaling when safety band shifts (M1 soc sim ~0.6-0.8).
     "T4_island_shifted": {
         "source": {"env_mode": "islanded",
                    "scenario_name": "typical_week_summer",

@@ -1,0 +1,65 @@
+=== T3 v3 start: Sun Oct 11 16:24:52     2026 ===
+
+[A] from_scratch on T3 target...
+  [hfg_sac on T3_pilot_scratch seed=42] cost=96761.6  viol=0.30%  fcsd=0.9920  time=1126.7s
+    done in 1133.3s
+
+[B] naive transfer...
+    Transferred weights (obs=9, act=4)
+    M4: safety-biased corrective, beta_init=0.3, decay over ~13440.0 steps, island=True
+    done in 4105.9s
+
+[C] conservative transfer (M1+M3+M4)...
+    M1 constraint similarity: {'soc_upper': 1.0, 'soc_lower': 1.0, 'freq_dev': 1.0}
+    M1 categories: {'soc_upper': 'transferable', 'soc_lower': 'transferable', 'freq_dev': 'transferable'}
+    Transferred weights (obs=9, act=4)
+    M3: froze bottom 1/2 actor trunk Linear layer(s)
+    M4: safety-biased corrective, beta_init=0.3, decay over ~13440.0 steps, island=True
+    done in 10876.7s
+
+================================================================
+PILOT RQ3 T3 (island normal->extreme, same band, seed=42, n_ep=200)
+================================================================
+{
+  "arm": "from_scratch",
+  "cost_per_day": 13823.08,
+  "violation_pct": 0.3,
+  "min_fcsd": 0.762,
+  "convergence_ep": 35,
+  "train_time_s": 1126.7
+}
+{
+  "arm": "naive_transfer",
+  "cost_per_day": 13730.03,
+  "violation_pct": 1.79,
+  "min_fcsd": 0.677,
+  "convergence_ep": 157,
+  "train_time_s": 2720.7,
+  "m1_similarities": {},
+  "m1_categories": {},
+  "m3_frozen": false,
+  "dims_match": true
+}
+{
+  "arm": "conservative_transfer",
+  "cost_per_day": 14572.64,
+  "violation_pct": 1.79,
+  "min_fcsd": 0.679,
+  "convergence_ep": 65,
+  "train_time_s": 9502.4,
+  "m1_similarities": {
+    "soc_upper": 1.0,
+    "soc_lower": 1.0,
+    "freq_dev": 1.0
+  },
+  "m1_categories": {
+    "soc_upper": "transferable",
+    "soc_lower": "transferable",
+    "freq_dev": "transferable"
+  },
+  "m3_frozen": true,
+  "dims_match": true
+}
+
+Saved: E:\ÑÐ¾¿\saferl\outputs\experiments\pilot_rq3_t3\pilot_summary.json
+=== T4 start: Sun Oct 11 20:53:37     2026 ===

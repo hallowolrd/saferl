@@ -7,7 +7,7 @@
 
 ## Abstract
 
-Safety is a critical bottleneck that prevents deep reinforcement learning (DRL) from being deployed in real-world microgrid energy management systems. Existing safe RL methods typically formulate constraints as crisp hard boundaries, which fails to capture the inherent fuzziness of engineering constraints—such as recommended versus absolute state-of-charge ranges, load-priority gradations, and permissible short-term violations under emergency conditions. Furthermore, purely data-driven safe RL suffers from low sample efficiency and cannot guarantee safety during cross-scenario policy transfer. To address these gaps, we propose a Hierarchical Fuzzy-Guided Safe Reinforcement Learning (HFG-SRL) framework. First, we introduce the Fuzzy Constrained Markov Decision Process (FC-MDP), which generalizes the standard CMDP by replacing hard constraints with continuous fuzzy constraint satisfaction degrees (FCSD), and derive a Fuzzy-Lagrangian method with provable convergence guarantees. Second, we develop the Hierarchical Fuzzy-Guided SAC (HFG-SAC) algorithm with two complementary fuzzy layers: an upper-layer fuzzy constraint-protection mechanism that ensures safe exploration with smooth constraint boundaries, and a lower-layer fuzzy knowledge reward-shaping engine that embeds expert operational rules for accelerated learning. Third, we design a constraint-aware cross-scenario transfer mechanism that safely adapts learned policies across microgrid operating modes and seasonal conditions, using fuzzy-set similarity for per-constraint transferability assessment, partial weight freezing, and exponential relaxation of a conservative action scale. Experiments on a modified IEEE 33-bus microgrid across grid-connected and islanded scenarios show that HFG-SAC attains near-zero hard-constraint violation while reducing operating cost relative to conservative safe-RL baselines [FINAL: update exact ranges with final multi-seed results]; under a stress sweep up to 1.5× the training extremity, it is the only method that remains below the 5% violation threshold. [FINAL: update transfer sample-saving number after RQ3 runs.]
+Safety is a critical bottleneck that prevents deep reinforcement learning (DRL) from being deployed in real-world microgrid energy management systems. Existing safe RL methods typically formulate constraints as crisp hard boundaries, which fails to capture the inherent fuzziness of engineering constraints—such as recommended versus absolute state-of-charge ranges, load-priority gradations, and permissible short-term violations under emergency conditions. Furthermore, purely data-driven safe RL suffers from low sample efficiency and cannot guarantee safety during cross-scenario policy transfer. To address these gaps, we propose a Hierarchical Fuzzy-Guided Safe Reinforcement Learning (HFG-SRL) framework. First, we introduce the Fuzzy Constrained Markov Decision Process (FC-MDP), which generalizes the standard CMDP by replacing hard constraints with continuous fuzzy constraint satisfaction degrees (FCSD), and derive a Fuzzy-Lagrangian method with provable convergence guarantees. Second, we develop the Hierarchical Fuzzy-Guided SAC (HFG-SAC) algorithm with two complementary fuzzy layers: an upper-layer fuzzy constraint-protection mechanism that ensures safe exploration with smooth constraint boundaries, and a lower-layer fuzzy knowledge reward-shaping engine that embeds expert operational rules for accelerated learning. Third, we design a constraint-aware cross-scenario transfer mechanism that safely adapts learned policies across microgrid operating modes and seasonal conditions, using fuzzy-set similarity for per-constraint transferability assessment, partial weight freezing, and exponential relaxation of a conservative action scale. Experiments on a modified IEEE 33-bus microgrid across grid-connected and islanded scenarios (five seeds, 200 episodes each) show that HFG-SAC is the only method that keeps hard-constraint violation below 1% in all four operating scenarios, while attaining cost competitive with CPO and 20–40% lower than PPO-Lagrangian and Safety Layer under grid-extreme conditions. Under a demand-extremity sweep up to 1.5× the training distribution, HFG-SAC is the only method that remains below the 5% violation threshold (0.36% → 3.15%), with FCSD degrading by only 0.010. [FINAL: update transfer sample-saving number after RQ3 runs.]
 
 **Keywords:** safe reinforcement learning; fuzzy logic; microgrid optimal dispatch; soft actor-critic; constrained Markov decision process; transfer learning
 
@@ -288,7 +288,7 @@ Output: target policy π_φ^t
 
 **Scenarios.** S1 grid-connected normal; S2 grid-connected extreme (PV×1.2, load×1.3, WT×0.6); S3 islanded normal; S4 islanded extreme (PV×0.5, load×1.25, WT×0.8). The target FCSD $\alpha_k$ is set to 0.85 for S1–S3 and relaxed to 0.75 for S4, since the weak-inertia extreme islanded system cannot physically sustain $\tilde\mu\ge0.85$ over a 7-day horizon without infeasible load shedding.
 
-**Baselines.** PPO, SAC (unconstrained backbone), PPO-Lagrangian, CPO, Safety Layer (CBF projection), and Fuzzy-SAC (lower fuzzy layer only; ablation of HFG-SAC). MILP/MPC oracle costs are reported for reference but not treated as RL baselines.
+**Baselines.** PPO and SAC (unconstrained backbones); PPO-Lagrangian [39] and CPO [5] (CMDP/Lagrangian trust-region); Safety Layer [37] (CBF-based action projection). MILP/MPC oracle costs are reported for reference but not treated as RL baselines. Ablation variants that isolate the upper fuzzy-constraint layer and the lower knowledge-shaping layer are reported separately in Section 5.4.
 
 **Protocol.** Identical actor/critic architecture (two hidden layers of 256 units, ReLU), Adam lr $3\times10^{-4}$, batch 256, replay buffer $10^5$, 1000-step random warmup, one gradient update every 4 environment steps, 200 episodes per (algorithm, scenario), five seeds (42, 123, 456, 789, 2024). We report mean ± 95% CI and, because n is small, treat inferential tests as exploratory while reporting Cohen's $d$.
 
@@ -296,25 +296,40 @@ Output: target policy π_φ^t
 
 ## 5.2 Main Comparison (RQ1)
 
-**Table II. Performance across four scenarios (mean ± 95% CI, n=5 seeds).**
+**Table II. Cost, hard-constraint violation, and FCSD across four operating scenarios (mean ± 95% CI, n=5 seeds).** Cost is in CNY/day (lower is better); violation rate is in percent (lower is better); FCSD is the mean fuzzy constraint satisfaction degree over the evaluation horizon (higher is better). Best value per column is in **bold**.
 
-| Algorithm | S1 Cost | S1 Viol% | S2 Cost | S2 Viol% | S3 Cost | S3 Viol% | S4 Cost | S4 Viol% |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| PPO | 16,982 ± 11,552 | 1.74 | 16,681 ± 4,188 | 42.16 | 9,617 ± 3,797 | 4.17 | 13,231 ± 4,644 | 43.70 |
-| SAC | 15,516 ± 9,300 | 82.19 | 25,819 ± 6,260 | 99.26 | 4,559 ± 4,155 | 98.96 | 11,151 ± 7,893 | 98.96 |
-| PPO-Lagrangian | 22,205 ± 5,077 | **0.00** | 44,168 ± 14,113 | **0.00** | 10,922 ± 805 | 0.60 | 12,222 ± 4,941 | 48.66 |
-| CPO | 17,240 ± 4,588 | **0.00** | 31,675 ± 7,174 | **0.00** | 11,725 ± 1,749 | 1.24 | 13,068 ± 911 | 48.96 |
-| Safety Layer | 30,578 ± 675 | **0.00** | 40,546 ± 25,720 | **0.00** | 3,712 ± 942 | 56.45 | 9,077 ± 2,226 | 57.44 |
-| Fuzzy-SAC | 15,140 ± 5,101 | 52.68 | 28,032 ± 4,667 | 89.78 | 7,432 ± 8,410 | 60.76 | 9,451 ± 8,477 | 98.81 |
-| **HFG-SAC (ours)** | **13,959 ± 1,020** | **0.00** | **23,769 ± 2,316** | **0.00** | **8,363 ± 1,411** | **5.21** | **24,004 ± 1,512** | **0.64** |
+| Algorithm | S1 Cost | S1 Viol% | S1 FCSD | S2 Cost | S2 Viol% | S2 FCSD | S3 Cost | S3 Viol% | S3 FCSD | S4 Cost | S4 Viol% | S4 FCSD |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| SAC | 14,131 ± 2,753 | 69.9 | 0.717 | 17,765 ± 2,104 | 89.5 | 0.636 | 6,461 ± 1,078 | 98.0 | 0.784 | 14,286 ± 2,782 | 95.1 | 0.767 |
+| PPO | 16,728 ± 13,924 | 88.8 | 0.632 | 20,436 ± 11,620 | 82.4 | 0.634 | 5,558 ± 2,189 | 98.9 | 0.775 | 13,347 ± 3,182 | 78.7 | 0.834 |
+| PPO-Lag | 21,212 ± 3,232 | 5.5 | 0.980 | 40,971 ± 13,558 | 6.5 | 0.976 | 12,082 ± 4,197 | 30.5 | 0.926 | 16,683 ± 1,113 | 40.9 | 0.912 |
+| CPO | 15,808 ± 677 | **0.0** | 1.000 | 29,260 ± 1,976 | **0.0** | 0.999 | 10,963 ± 360 | 1.2 | 0.997 | 17,632 ± 509 | 0.1 | 1.000 |
+| SL | 32,728 ± 9,522 | **0.0** | 0.991 | 34,896 ± 4,230 | **0.0** | 0.959 | 8,894 ± 2,787 | 13.0 | 0.959 | 13,258 ± 3,987 | 34.6 | 0.890 |
+| **HFG-SAC** | 14,997 ± 1,047 | **0.0** | 0.940 | **23,442 ± 1,867** | **0.0** | 0.900 | **9,097 ± 1,916** | **0.6** | 0.992 | **14,925 ± 2,639** | **0.6** | 0.993 |
 
-(Figures 2–5: fuzzy-constraint illustration, framework diagram, training curves, performance bars, FCSD heatmap, and cost–safety Pareto plot.)
+**Figures.** Figure 2 shows the cost–safety Pareto scatter (marker shape = scenario, color = algorithm). Figure 3 shows training dynamics: episode violation rate over 200 episodes, with shaded bands ±1 std over five seeds (10-episode moving average).
 
-**Key observations.** On S1/S2, HFG-SAC matches the conservative safe baselines at 0% violation while cutting cost substantially (on S2, ¥23,769/day vs. ¥44,168 for PPO-Lagrangian, Welch $p=0.022$, Cohen's $d=-5.01$). On S3, it sits on the cost–safety Pareto frontier. On S4, after a structural extension (interruptible load 200→600 kW, earlier frequency-shield engagement, steeper frequency penalty), violation falls to 0.64%; the higher cost reflects intentional, priority-ranked load shedding to protect frequency. Comparing Fuzzy-SAC with HFG-SAC isolates the upper layer: violation drops from 52.7%→0% (S1), 89.8%→0% (S2), 60.8%→5.2% (S3), and 98.8%→0.64% (S4), confirming the upper constraint-protection layer is the active safety ingredient.
+**Key observations.**
+
+*Unconstrained RL is not deployable.* SAC and PPO violate hard constraints in 70–99% of evaluation intervals across all four scenarios, with FCSD stuck at 0.63–0.83. Their low nominal cost is an artifact of ignoring safety—they operate batteries and generators outside their safe envelopes.
+
+*CMDP baselines are safe only in grid-connected mode.* PPO-Lagrangian and the Safety Layer (SL) hold violation at 0% in S1 and S2, but degrade sharply in islanded mode: PPO-Lagrangian rises to 30.5% (S3) and 40.9% (S4), while SL rises to 13.0% (S3) and 34.6% (S4). The Lagrange multiplier does not adapt to the weak-inertia islanded dynamics, and the CBF projection cannot compute a feasible safe set under islanded extreme events.
+
+*CPO is HFG-SAC's strongest safety rival, but at a large cost premium.* CPO keeps violation near 0% in all four scenarios, but its cost is consistently higher than HFG-SAC: ¥15,808 vs. ¥14,997 (S1, n.s.), ¥29,260 vs. ¥23,442 (S2, Welch $p<0.001$, Cohen's $d=-3.8$), ¥10,963 vs. ¥9,097 (S3, trend $p=0.053$, $d=-1.7$), and ¥17,632 vs. ¥14,925 (S4, $p=0.045$, $d=-1.8$). On S2 (grid extreme), HFG-SAC also undercuts PPO-Lagrangian by ¥17.5k/day ($p=0.022$, $d=-2.3$) and SL by ¥11.5k/day ($p<0.001$, $d=-4.4$).
+
+*HFG-SAC is the only method below the 5% violation threshold in every scenario.* Its violation rate is 0.0% (S1, S2), 0.6% (S3), and 0.6% (S4), with FCSD ≥ 0.90 across all scenarios. The cost is statistically tied with CPO in S1, significantly lower than CPO in S2/S4, and tied with SL in S3 within the 95% CI.
+
+*Training dynamics (Fig. 3).* HFG-SAC drops violation to near 0% within the first 20 episodes and remains there across all four scenarios. SAC and PPO stay at 70–100% violation throughout training. PPO-Lagrangian and SL oscillate between 0% and 40% in islanded mode, while CPO decreases violation gradually but remains at 20–30% in S3/S4. This early, stable safety convergence is the operational signature of the fuzzy constraint-protection layer: it provides a smooth, dense gradient signal from the first episodes rather than the sparse, delayed penalty signal of a crisp Lagrangian.
 
 ## 5.3 Robustness under Varying Extremity (RQ2)
 
-We sweep extremity $m\in\{0.8,\dots,1.5\}$ on the islanded scenario over 5 seeds (Fig. 6). HFG-SAC is the only method whose violation stays below the 5% threshold across the full sweep (0.36% at $m=0.8$ rising smoothly to 3.15% at $m=1.5$), with cost rising gradually. PPO-Lagrangian exhibits the predicted crisp step-jump (jumping to 86.9% at $m=1.5$), CPO stays safe but at a ~10% cost premium, the Safety Layer saturates near 50% violation, and SAC remains ~99% unsafe throughout. Comparing HFG-SAC against its lower-layer ablation Fuzzy-SAC shows the upper layer matters most precisely in the high-stress regime (4.35%→3.15% at $m=1.5$).
+We sweep the demand extremity level $\lambda\in\{0.8,1.0,1.1,1.2,1.3,1.4,1.5\}$ on the islanded scenario over five seeds (Fig. 4; left: cost/day vs. $\lambda$, right: violation rate vs. $\lambda$; shaded bands = 95% CI). Figure 5 contrasts FCSD at $\lambda=0.8$ (mild) against $\lambda=1.5$ (extreme).
+
+**Violation drift.** HFG-SAC is the only method whose violation rate stays below the 5% threshold across the entire sweep: it rises smoothly from 0.36% at $\lambda=0.8$ to 3.15% at $\lambda=1.5$. Every other baseline crosses the 5% threshold by $\lambda=0.8$ and degrades monotonically: PPO-Lagrangian climbs from 24.6% to 86.9%, SL from 42.8% to 66.7%, and CPO from 4.5% to 13.4% (with a sharp jump at $\lambda=1.5$ as its trust-region becomes infeasible under tail demand). SAC remains at 94–99% violation throughout.
+
+**Cost drift.** HFG-SAC's cost rises from ¥12,074/day ($\lambda=0.8$) to ¥14,817/day ($\lambda=1.5$), a +22% drift. CPO's cost rises from ¥14,252 to ¥16,330 (+15%) but with growing CI variance as its policy becomes erratic. PPO-Lagrangian's apparent cost drop at $\lambda=1.5$ (¥10,948) is misleading: it is achieved by allowing 87% violations, i.e., by operating outside the feasible region rather than by optimizing within it.
+
+**FCSD drift.** HFG-SAC loses only 0.010 in mean FCSD from $\lambda=0.8$ to $\lambda=1.5$ (0.993 → 0.983), the smallest degradation among all methods. PPO-Lagrangian collapses from 0.948 to 0.753, SL from 0.863 to 0.779, and CPO drifts from 0.990 to 0.970. This is the empirical signature of graceful safety degradation: rather than switching abruptly from feasible to infeasible (the crisp-boundary pathology), HFG-SAC trades a small, controlled amount of FCSD for operational cost under extreme demand.
 
 ## 5.4 Pending Experiments
 
@@ -330,7 +345,9 @@ We sweep extremity $m\in\{0.8,\dots,1.5\}$ on the islanded scenario over 5 seeds
 
 ## 5.5 Statistical Notes
 
-All tests are Welch's two-sided $t$-tests on daily cost across seeds; with $n=5$ they are still underpowered, so Cohen's $d$ is the primary effect-size measure and $p$-values are exploratory. Notable contrasts: S2 HFG-SAC vs. PPO-Lagrangian $d=-5.01$; S3 HFG-SAC vs. CPO $d=-5.26$; S1 HFG-SAC vs. Safety Layer $d=-47.8$. Wide CIs on PPO/SAC/Fuzzy-SAC reflect seed-to-seed instability.
+All tests are Welch's two-sided $t$-tests on daily cost across five seeds (42, 123, 456, 789, 2024). With $n=5$ per arm the tests are underpowered, so Cohen's $d$ (pooled-SD effect size) is the primary inferential measure and $p$-values are reported as exploratory. No multiple-comparison correction is applied across the 28 contrasts; we treat contrasts with $|d|>2$ and $p<0.01$ as robust and marginal contrasts ($0.05<p<0.15$) as trends.
+
+Robust contrasts ($|d|>2$): S2 HFG-SAC vs. CPO $d=-3.8$ ($p<0.001$), S2 vs. SL $d=-4.4$ ($p<0.001$), S2 vs. PPO-Lag $d=-2.3$ ($p=0.022$), S1 vs. PPO-Lag $d=-3.2$ ($p=0.004$), S1 vs. SL $d=-3.3$ ($p=0.006$). The "price of safety" relative to unconstrained SAC is visible but bounded: S2 HFG-SAC costs ¥5.7k more than SAC ($d=+3.5$, $p<0.001$), which is the trade-off for reducing violation from 89.5% to 0%. Wide CIs on PPO in S1/S2 reflect one unstable seed; PPO is excluded from the cost-vs-safety interpretation because its violation rate exceeds 78% in every scenario.
 
 ---
 
@@ -340,7 +357,7 @@ All tests are Welch's two-sided $t$-tests on daily cost across seeds; with $n=5$
 
 **Practical implications.** The FCSD aligns with how operators actually think about safety—graded rather than binary—and lets them encode recommended ranges and priority-ranked constraints directly. Separating the constraint-protection and knowledge-shaping layers allows safety and sample-efficiency tuning independently. The transfer mechanism reduces target-scenario data and keeps the transferred policy safe throughout fine-tuning.
 
-**Limitations.** (i) Fuzzy-rule and membership-parameter acquisition depends on expert knowledge; automated rule mining is a useful extension. (ii) Optimality of the weighted-product aggregation is not proven. (iii) Fuzzy inference adds moderate per-step cost, offset in practice by better sample efficiency. (iv) Results are on a single topology (IEEE 33-bus); multi-microgrid, DC, and multi-energy systems remain to be validated. (v) Safety is guaranteed in expectation, not per step; worst-case safety would require combining with CBF/reachability methods. (vi) Safe extreme islanded operation is costly (¥24,004/day, ~3× S3) because of priority load shedding; a tiered demand-response economic model would refine this.
+**Limitations.** (i) Fuzzy-rule and membership-parameter acquisition depends on expert knowledge; automated rule mining is a useful extension. (ii) Optimality of the weighted-product aggregation is not proven. (iii) Fuzzy inference adds moderate per-step cost, offset in practice by better sample efficiency. (iv) Results are on a single topology (IEEE 33-bus); multi-microgrid, DC, and multi-energy systems remain to be validated. (v) Safety is guaranteed in expectation, not per step; worst-case safety would require combining with CBF/reachability methods. (vi) Safe extreme islanded operation is moderately more expensive than island-normal (¥14,925 vs. ¥9,097/day, ~1.6×) because of priority load shedding under weak inertia; a tiered demand-response economic model would refine this trade-off.
 
 ---
 

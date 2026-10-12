@@ -24,7 +24,6 @@ from .similarity import (
     categorize_constraints,
     gaussian_membership,
     jaccard_similarity,
-    transfer_membership_params,
 )
 
 logger = logging.getLogger(__name__)
@@ -144,31 +143,6 @@ class TransferAgent:
         logger.info("Constraint similarity: %s", sims)
         logger.info("Constraint categories: %s", self.constraint_categories)
         return sims
-
-    def transfer_constraint_params(
-        self,
-        constraint_specs: List[Dict],
-    ) -> Dict[str, Dict[str, float]]:
-        """Apply M2 per-constraint parameter transfer.
-
-        Must be called after compute_constraint_similarities().
-        """
-        out: Dict[str, Dict[str, float]] = {}
-        for spec in constraint_specs:
-            name = spec["name"]
-            category = self.constraint_categories.get(name, "relearn")
-            out[name] = transfer_membership_params(
-                source_mu=spec["source_mu"],
-                source_beta=spec["source_beta"],
-                category=category,
-                delta=spec.get("delta", 0.0),
-                Delta=spec.get("Delta", 1.0),
-                default_mu=spec.get("default_mu", spec["source_mu"]),
-                default_beta=spec.get("default_beta", spec["source_beta"]),
-            )
-        self.transferred_params = out
-        logger.info("Transferred constraint params: %s", out)
-        return out
 
     # ------------------------------------------------------------------
     # Weight transfer helpers (M3)

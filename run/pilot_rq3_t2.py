@@ -1,16 +1,10 @@
-"""RQ3 T2 diagnostic pilot.
+"""RQ3 T2 pilot: grid summer normal -> grid summer extreme, band narrowed [0.4, 0.7].
 
-T2 = grid-connected summer -> islanded summer.
-This is the critical transfer task: obs dims differ (grid=8, island=9),
-so weight transfer is SKIPPED and M3 freezing is inactive.  We test whether
-M1 (Jaccard fuzzy prior) + M4 (conservative action scaling) provide any
-benefit over naive training when no weights can be copied.
-
-Arms (single seed, 200 episodes target):
-  A. from_scratch HFG on islanded target
-  B. naive transfer (conservative=False) -- same as A since dims differ
-  C. M4-only (conservative=True, use_M1=False, use_M3=False)
-  D. M1+M4 (conservative=True, use_M1=True, use_M3=False)
+T2 tests M4 conservative scaling when the safety band shifts (M1 soc sim ~0.64-0.77).
+3 arms x 1 seed x 200 episodes:
+  A. from_scratch
+  B. naive transfer (M3, no M4)
+  C. conservative (M1+M3+M4)
 
 Run: uv run python run/pilot_rq3_t2.py
 """
@@ -30,16 +24,17 @@ os.environ.setdefault("HFG_NUM_THREADS", str(max(1, (os.cpu_count() or 4) // 2))
 
 from experiment_runner import train_agent, _run_transfer  # noqa: E402
 
-# T2: grid summer -> island summer
 SOURCE = {
     "env_mode": "grid_connected",
     "scenario_name": "typical_week_summer",
     "extreme_multiplier": None,
 }
 TARGET = {
-    "env_mode": "islanded",
-    "scenario_name": "typical_week_summer",
-    "extreme_multiplier": None,
+    "env_mode": "grid_connected",
+    "scenario_name": "summer_extreme",
+    "extreme_multiplier": {"pv": 1.2, "load": 1.3, "wt": 0.6},
+    "soc_optimal_min": 0.4,
+    "soc_optimal_max": 0.7,
 }
 
 SEED = 42
@@ -71,47 +66,30 @@ def summarise(tag: str, result) -> dict:
 def main() -> None:
     rows = []
 
-    print("\n[A] HFG-SAC from scratch on T2 target (islanded)...")
+    print("\n[A] from_scratch on T2 target...")
     t0 = time.time()
-    r_a = train_agent(
-        "hfg_sac", "T2_pilot_scratch", TARGET, SEED,
-        n_episodes=N_EPISODES, device=DEVICE, output_dir=OUT_DIR,
-    )
+    r_a = train_agent("hfg_sac", "T2_pilot_scratch", TARGET, SEED,
+                      n_episodes=N_EPISODES, device=DEVICE, output_dir=OUT_DIR)
     rows.append(summarise("from_scratch", r_a))
     print(f"    done in {time.time() - t0:.1f}s")
 
-    print("\n[B] Naive transfer (conservative=False)...")
+    print("\n[B] naive transfer...")
     t0 = time.time()
-    r_b = _run_transfer(
-        SOURCE, TARGET, SEED,
-        n_episodes=N_EPISODES, device=DEVICE, output_dir=OUT_DIR,
-        conservative=False,
-    )
+    r_b = _run_transfer(SOURCE, TARGET, SEED, n_episodes=N_EPISODES,
+                        device=DEVICE, output_dir=OUT_DIR, conservative=False)
     rows.append(summarise("naive_transfer", r_b))
     print(f"    done in {time.time() - t0:.1f}s")
 
-    print("\n[C] M4-only (conservative, no M1, no M3)...")
+    print("\n[C] conservative transfer (M1+M3+M4)...")
     t0 = time.time()
-    r_c = _run_transfer(
-        SOURCE, TARGET, SEED,
-        n_episodes=N_EPISODES, device=DEVICE, output_dir=OUT_DIR,
-        conservative=True, use_M1=False, use_M3=False, use_M4=True,
-    )
-    rows.append(summarise("M4_only", r_c))
-    print(f"    done in {time.time() - t0:.1f}s")
-
-    print("\n[D] M1+M4 (full conservative, no M3 since dims differ)...")
-    t0 = time.time()
-    r_d = _run_transfer(
-        SOURCE, TARGET, SEED,
-        n_episodes=N_EPISODES, device=DEVICE, output_dir=OUT_DIR,
-        conservative=True, use_M1=True, use_M3=False, use_M4=True,
-    )
-    rows.append(summarise("M1_M4", r_d))
+    r_c = _run_transfer(SOURCE, TARGET, SEED, n_episodes=N_EPISODES,
+                        device=DEVICE, output_dir=OUT_DIR,
+                        conservative=True, use_M1=True, use_M3=True, use_M4=True)
+    rows.append(summarise("conservative_transfer", r_c))
     print(f"    done in {time.time() - t0:.1f}s")
 
     print("\n" + "=" * 64)
-    print("PILOT RQ3 T2 SUMMARY (grid->island, seed=42, n_episodes=200)")
+    print("PILOT RQ3 T2 (grid band shifted [0.4,0.7], seed=42, n_ep=200)")
     print("=" * 64)
     for r in rows:
         print(json.dumps(r, indent=2))
@@ -119,8 +97,7 @@ def main() -> None:
     out_json = OUT_DIR / "pilot_summary.json"
     with open(out_json, "w", encoding="utf-8") as f:
         json.dump({"rows": rows, "config": {
-            "task": "T2_grid_island", "seed": SEED,
-            "n_episodes": N_EPISODES,
+            "task": "T2_grid_shifted", "seed": SEED, "n_episodes": N_EPISODES,
         }}, f, indent=2)
     print(f"\nSaved: {out_json}")
 

@@ -1,11 +1,10 @@
-"""Tests for M1 (Jaccard fuzzy-set similarity) and M2 (parameter transfer).
+"""Tests for M1 (Jaccard fuzzy-set similarity).
 
 Run:
     .venv/Scripts/python.exe -m pytest tests/test_similarity.py -v
 """
 from __future__ import annotations
 
-import math
 import sys
 from pathlib import Path
 
@@ -19,7 +18,6 @@ from hfg_srl.transfer.similarity import (  # noqa: E402
     gaussian_membership,
     jaccard_similarity,
     categorize_constraints,
-    transfer_membership_params,
 )
 
 
@@ -107,40 +105,3 @@ def test_categorize_relearn():
     """sim < tau_low -> 'relearn'."""
     cat = categorize_constraints({"soc": 0.1}, tau_high=0.8, tau_low=0.3)
     assert cat["soc"] == "relearn"
-
-
-# ---------------------------------------------------------------------------
-# M2: Membership parameter transfer
-# ---------------------------------------------------------------------------
-
-def test_transfer_direct_copy_for_transferable():
-    """Transferable: beta and x_ref copied unchanged."""
-    out = transfer_membership_params(
-        source_mu=0.5, source_beta=1.0,
-        category="transferable", delta=0.0, Delta=1.0,
-        default_mu=0.5, default_beta=1.0,
-    )
-    assert out["x_ref"] == pytest.approx(0.5)
-    assert out["beta"] == pytest.approx(1.0)
-
-
-def test_transfer_adaptable_applies_shift_scale():
-    """Adaptable: x_ref += delta, beta *= Delta."""
-    out = transfer_membership_params(
-        source_mu=0.5, source_beta=1.0,
-        category="adaptable", delta=0.1, Delta=1.2,
-        default_mu=0.5, default_beta=1.0,
-    )
-    assert out["x_ref"] == pytest.approx(0.6)
-    assert out["beta"] == pytest.approx(1.2)
-
-
-def test_transfer_relearn_uses_default():
-    """Relearn: ignore source, use expert default."""
-    out = transfer_membership_params(
-        source_mu=0.5, source_beta=1.0,
-        category="relearn", delta=0.0, Delta=1.0,
-        default_mu=0.7, default_beta=0.5,
-    )
-    assert out["x_ref"] == pytest.approx(0.7)
-    assert out["beta"] == pytest.approx(0.5)

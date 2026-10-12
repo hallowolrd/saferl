@@ -8,8 +8,7 @@ potential-based shaping approach).
 from __future__ import annotations
 
 import logging
-import math
-from typing import Dict, Optional
+from typing import Optional
 
 import numpy as np
 import torch
@@ -195,79 +194,3 @@ class FuzzyRewardShaper(nn.Module):
     @property
     def current_weight(self) -> float:
         return float(self.shaping_weight.item())
-
-    def apply_m2_init(
-        self,
-        m2_init: Dict[str, Dict[str, float]],
-        mode: str,
-        target_frequency_limit_hz: float = 0.5,
-    ) -> int:
-        """Warm-start antecedent membership from transferred fuzzy priors (M2).
-
-        Overwrites the SoC (and, in islanded mode, frequency) antecedent
-        Gaussian centers/widths of the TSK reward shaper with the parameters
-        produced by the M1 -> M2 transfer pipeline. This is what gives M1's
-        categorization a behavioral effect: rather than random/expert-default
-        fuzzy priors, the target shaper starts at the specification implied by
-        the source scenario.
-
-        Coordinate conventions:
-            - SoC input (dim 0) is physical in [0, 1]; m2_init x_ref/beta are
-              already in this scale.
-            - Frequency input (islanded dim 4) is normalized deviation
-              freq_deviation / frequency_limit_hz, so the m2 beta (given in
-              Hz as frequency_limit/3) is divided by frequency_limit to yield
-              a dimensionless width of ~1/3.
-
-        Only rules that actually use a dimension (narrow antecedent std) are
-        touched; "don't-care" rules with wide stds are left unchanged.
-        High-SoC rules (mean >= 0.5) receive soc_upper priors; low-SoC rules
-        receive soc_lower priors.
-
-        Args:
-            m2_init: Constraint name -> {"x_ref": float, "beta": float}.
-            mode: "grid_connected" or "islanded".
-
-        Returns:
-            Number of (rule, dimension) antecedent entries overwritten.
-        """
-        membership = self.fuzzy_system.membership
-        num_rules = membership.means.shape[0]
-        # Threshold below which an antecedent is considered to "use" the dim.
-        care_std = 0.5
-        changed = 0
-
-        soc_upper = m2_init.get("soc_upper")
-        soc_lower = m2_init.get("soc_lower")
-        if (soc_upper or soc_lower):
-            means = membership.means.data[:, 0]
-            stds = torch.exp(membership.log_stds.data[:, 0])
-            for r in range(num_rules):
-                if stds[r] > care_std:
-                    continue  # don't-care dimension
-                if means[r] >= 0.5 and soc_upper:
-                    x_ref, beta = soc_upper["x_ref"], soc_upper["beta"]
-                elif means[r] < 0.5 and soc_lower:
-                    x_ref, beta = soc_lower["x_ref"], soc_lower["beta"]
-                else:
-                    continue
-                membership.means.data[r, 0] = float(x_ref)
-                membership.log_stds.data[r, 0] = math.log(max(float(beta), 1e-2))
-                changed += 1
-
-        freq = m2_init.get("freq_dev")
-        freq_dim = 4  # islanded obs layout: [..., freq_normalized at index 4]
-        if freq and mode == "islanded" and self.num_inputs > freq_dim:
-            beta_norm = float(freq["beta"]) / max(float(target_frequency_limit_hz), 1e-3)
-            means = membership.means.data[:, freq_dim]
-            stds = torch.exp(membership.log_stds.data[:, freq_dim])
-            for r in range(num_rules):
-                if stds[r] > care_std:
-                    continue
-                membership.means.data[r, freq_dim] = float(freq["x_ref"])
-                membership.log_stds.data[r, freq_dim] = math.log(max(beta_norm, 1e-2))
-                changed += 1
-
-        if changed:
-            logger.info(f"M2: warm-started {changed} reward-shaper antecedent entries.")
-        return changed

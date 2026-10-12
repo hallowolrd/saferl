@@ -1,15 +1,10 @@
-"""M1 + M2: Fuzzy-rule similarity and membership-parameter transfer.
+"""M1: Fuzzy-rule Jaccard similarity and constraint categorization.
 
-Implements the mechanism described in Chapter 4.4 of the HFG-SRL paper:
+Implements the analysis tool described in Chapter 4.4 of the HFG-SRL paper:
 
 - **M1 — Jaccard fuzzy-set similarity** (Sec 4.4.1):
   sim_k = ∫ min(μ_k^s, μ_k^t) dx / ∫ max(μ_k^s, μ_k^t) dx
   Used to categorize each constraint k into transferable / adaptable / relearn.
-
-- **M2 — Membership parameter transfer** (Sec 4.4.2):
-  Transferable: β_k^t = β_k^s,  x_ref_k^t = x_ref_k^s
-  Adaptable:    β_k^t = β_k^s · Δ_k,  x_ref_k^t = x_ref_k^s + δ_k
-  Relearn:      β_k^t = β_default,  x_ref_k^t = x_ref_default
 
 The implementation is deliberately numeric (fixed-grid quadrature) so it
 works with any 1-D membership function supplied as a callable, not just
@@ -111,40 +106,3 @@ def categorize_constraints(
         else:
             out[name] = "relearn"
     return out
-
-
-# ---------------------------------------------------------------------------
-# M2: Membership parameter transfer
-# ---------------------------------------------------------------------------
-
-def transfer_membership_params(
-    source_mu: float,
-    source_beta: float,
-    category: str,
-    delta: float = 0.0,
-    Delta: float = 1.0,
-    default_mu: float = 0.5,
-    default_beta: float = 1.0,
-) -> Dict[str, float]:
-    """Compute the target-scenario membership parameters per M2.
-
-    Args:
-        source_mu: Source center x_ref^s.
-        source_beta: Source boundary width β^s.
-        category: One of {"transferable", "adaptable", "relearn"}.
-        delta: Adaptable shift  δ_k (default 0).
-        Delta: Adaptable scale  Δ_k (default 1).
-        default_mu: Expert-default center for relearn constraints.
-        default_beta: Expert-default width for relearn constraints.
-
-    Returns:
-        Dict with keys "x_ref" and "beta".
-    """
-    if category == "transferable":
-        return {"x_ref": float(source_mu), "beta": float(source_beta)}
-    if category == "adaptable":
-        return {"x_ref": float(source_mu) + float(delta),
-                "beta": float(source_beta) * float(Delta)}
-    if category == "relearn":
-        return {"x_ref": float(default_mu), "beta": float(default_beta)}
-    raise ValueError(f"Unknown category: {category!r}")

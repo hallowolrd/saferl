@@ -1,0 +1,47 @@
+{
+  "rows": [
+    {
+      "arm": "from_scratch",
+      "cost_per_day": 21727.36,
+      "violation_pct": 0.0,
+      "min_fcsd": 0.836,
+      "convergence_ep": 112,
+      "train_time_s": 612.3
+    },
+    {
+      "arm": "naive_transfer",
+      "cost_per_day": 53298.64,
+      "violation_pct": 0.0,
+      "min_fcsd": 0.835,
+      "convergence_ep": 10,
+      "train_time_s": 2647.8,
+      "m1_similarities": {},
+      "m1_categories": {},
+      "m3_frozen": false,
+      "dims_match": true
+    },
+    {
+      "arm": "conservative_transfer",
+      "cost_per_day": 92438.02,
+      "violation_pct": 0.0,
+      "min_fcsd": 0.87,
+      "convergence_ep": 99,
+      "train_time_s": 5976.8,
+      "m1_similarities": {
+        "soc_upper": 1.0,
+        "soc_lower": 1.0
+      },
+      "m1_categories": {
+        "soc_upper": "transferable",
+        "soc_lower": "transferable"
+      },
+      "m3_frozen": true,
+      "dims_match": true
+    }
+  ],
+  "config": {
+    "task": "T1_grid_same",
+    "seed": 42,
+    "n_episodes": 200
+  }
+}

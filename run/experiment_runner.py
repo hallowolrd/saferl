@@ -1232,36 +1232,6 @@ def build_constraint_specs(
     return specs
 
 
-def compute_m2_adjustments(spec: Dict) -> Tuple[float, float]:
-    """Derive M2 adaptable-constraint adjustments from the safety specs.
-
-    The target safety specification is known at deployment time (battery
-    operating band, grid-code frequency limit), so the adjustment of an
-    *adaptable* constraint is computed directly from the measured spec
-    difference rather than treated as a tuned hyperparameter:
-
-        δ_k = μ^t − μ^s   (required center shift)
-        Δ_k = β^t / β^s   (required width scaling)
-
-    With these values, M2 initialization (x_ref^s + δ_k, β^s·Δ_k) lands
-    exactly on the target membership parameters, warm-starting the target
-    fuzzy layer at its correct specification while the actor trunk is
-    copied from the source.  Transferable constraints copy source params
-    unchanged (δ=0, Δ=1); relearn constraints ignore them and use expert
-    defaults.
-
-    Args:
-        spec: One entry produced by :func:`build_constraint_specs`.
-
-    Returns:
-        (delta, Delta) as Python floats.
-    """
-    delta = float(spec["target_mu"]) - float(spec["source_mu"])
-    source_beta = max(float(spec["source_beta"]), 1e-6)
-    Delta = float(spec["target_beta"]) / source_beta
-    return delta, Delta
-
-
 def _run_transfer(
     source_cfg: dict,
     target_cfg: dict,
@@ -1314,11 +1284,13 @@ def _run_transfer(
     source_agent = make_agent("hfg_sac", source_hfg_cfg, source_obs_dim, source_act_dim, source_action_high, device)
     source_agent.train()
 
-    # Quick source training (fewer episodes for transfer)
+    # Source training: 200 episodes to get a reasonably converged policy
+    # before warm-starting the target. Half-baked source (100 ep) was the
+    # root cause of M3 freezing locking in bad features in earlier pilots.
     source_buffer = ReplayBuffer(source_obs_dim, source_act_dim, int(1e5), device)
     steps_per_episode = 96 * 7
     total_steps = 0
-    source_episodes = min(100, n_episodes // 2)
+    source_episodes = 200
 
     for ep in range(source_episodes):
         obs, info = source_env.reset()
@@ -1377,27 +1349,6 @@ def _run_transfer(
             constraint_categories[spec["name"]] = "adaptable"
         print(f"    M1 ablation: all constraints forced to 'adaptable'")
 
-    # M2: derive per-constraint adjustments from the safety specs and compute
-    # the target fuzzy-layer initialization (paper 4.4.2 Step 2).
-    m2_init: Dict[str, Dict[str, float]] = {}
-    if conservative:
-        from hfg_srl.transfer.similarity import transfer_membership_params
-        for spec in constraint_specs:
-            name = spec["name"]
-            category = constraint_categories.get(name, "adaptable")
-            delta, Delta = compute_m2_adjustments(spec)
-            init = transfer_membership_params(
-                source_mu=spec["source_mu"],
-                source_beta=spec["source_beta"],
-                category=category,
-                delta=delta,
-                Delta=Delta,
-                default_mu=spec["target_mu"],
-                default_beta=spec["target_beta"],
-            )
-            m2_init[name] = init
-        print(f"    M2 fuzzy-layer init: {m2_init}")
-
     target_hfg_cfg = HFGConfig(
         env=target_env_cfg,
         algorithm=AlgorithmConfig(
@@ -1431,71 +1382,58 @@ def _run_transfer(
 
     target_agent = make_agent("hfg_sac", target_hfg_cfg, target_obs_dim, target_act_dim, target_action_high, device)
 
-    # Transfer weights (only if dimensions match)
+    # M3: Warm-start weight initialization (paper §4.4.2 Step 3).
+    # Copy source actor/critic weights into the target agent. All parameters
+    # remain trainable — no trunk freezing. Freezing was removed because in
+    # T3/T4 (same obs/action dims, same env physics) there are no "general
+    # low-level features" to preserve; it only locked in half-baked source
+    # features and slowed convergence in pilots.
     dims_match = source_obs_dim == target_obs_dim and source_act_dim == target_act_dim
-    if dims_match:
+    m3_warm_started = False
+    if conservative and use_M3 and dims_match:
         if hasattr(source_agent, "actor") and hasattr(target_agent, "actor"):
             try:
                 target_agent.actor.load_state_dict(source_agent.actor.state_dict())
                 target_agent.critic.load_state_dict(source_agent.critic.state_dict())
                 target_agent.critic_target.load_state_dict(source_agent.critic.state_dict())
-                print(f"    Transferred weights (obs={source_obs_dim}, act={source_act_dim})")
+                m3_warm_started = True
+                print(f"    M3: warm-started weights (obs={source_obs_dim}, act={source_act_dim}), all trainable")
             except Exception as e:
-                print(f"    Weight transfer skipped: {e}")
+                print(f"    M3 warm-start skipped: {e}")
 
-    # M3: Partial freezing (paper §4.4.2 Step 3).
-    # Freeze bottom 50% of actor trunk (general temporal/component features);
-    # leave upper trunk + mean/log_std heads trainable.  Only applies when
-    # weights were actually copied (dims_match).
-    m3_active = False
-    if conservative and use_M3 and dims_match:
-        actor = target_agent.actor
-        if hasattr(actor, "trunk") and isinstance(actor.trunk, nn.Sequential):
-            linear_idx = [i for i, m in enumerate(actor.trunk) if isinstance(m, nn.Linear)]
-            n_linear = len(linear_idx)
-            if n_linear >= 2:
-                freeze_count = n_linear // 2  # bottom 50%
-                for i in linear_idx[:freeze_count]:
-                    for p in actor.trunk[i].parameters():
-                        p.requires_grad = False
-                m3_active = True
-                print(f"    M3: froze bottom {freeze_count}/{n_linear} actor trunk Linear layer(s)")
-
-    # Conservative initialization
+    # Conservative initialization: mildly reduce action std during early fine-tuning.
     if conservative:
-        # Reduce action std for more conservative exploration
         if hasattr(target_agent, "actor") and hasattr(target_agent.actor, "log_std_head"):
             import torch
             with torch.no_grad():
-                target_agent.actor.log_std_head.bias.fill_(-3.0)  # more conservative
-        # M2: warm-start the reward shaper antecedent from transferred priors.
-        m2_entries = 0
-        if hasattr(target_agent, "fuzzy_reward_shaper") and m2_init:
-            m2_entries = target_agent.fuzzy_reward_shaper.apply_m2_init(
-                m2_init, target_cfg["env_mode"],
-                target_frequency_limit_hz=float(target_env_cfg.frequency_limit_hz),
-            )
-            print(f"    M2: applied {m2_entries} transferred fuzzy-prior entries")
+                target_agent.actor.log_std_head.bias.fill_(-1.5)
 
     target_agent.train()
 
-    # M4: Initialize TransferAgent for exponential safety relaxation
-    from hfg_srl.transfer.transfer_agent import TransferAgent
-    transfer_agent = None
-    if conservative and use_M4:
-        transfer_agent = TransferAgent(
-            cfg=target_hfg_cfg,
-            source_agent=source_agent,
-            target_obs_dim=target_obs_dim,
-            target_act_dim=target_act_dim,
-            target_action_high=target_action_high,
-            device=device,
-        )
-        # Override decay steps based on n_episodes
-        transfer_agent.nu = float(np.log(20.0) / max(n_episodes * steps_per_episode * 0.3, 1))
-        transfer_agent.alpha_init = 2.5  # start at 2.5x conservative
-    elif conservative and not use_M4:
-        print(f"    M4 ablation: conservative action scaling disabled (alpha=1 throughout)")
+    # M4: Violation-triggered corrective action (paper §4.4.2).
+    # Instead of applying a continuous bias every step (which pollutes the
+    # learned policy and was shown to have zero effect on violation rate in
+    # earlier pilots), M4 now fires ONLY when the current observation shows
+    # an actual constraint breach:
+    #   - SOC below soc_opt_min -> push ESS toward charging (action[0] -= beta)
+    #   - SOC above soc_opt_max -> push ESS toward discharging (action[0] += beta)
+    #   - |normalized freq deviation| > 0.85 (islanded only) -> bias ESS to
+    #     counteract the frequency excursion.
+    # Magnitude is proportional to breach depth and multiplied by an exp-
+    # decaying schedule that is strong during early fine-tuning (when the
+    # transferred policy is least familiar with the target constraint) and
+    # fades to zero once the policy has adapted.
+    m4_beta_init = 0.3
+    m4_decay_frac = 0.10  # fraction of fine-tuning window over which beta decays 20x
+    m4_beta_decay_steps = max(n_episodes * steps_per_episode * m4_decay_frac, 1)
+    m4_beta_nu = float(np.log(20.0) / m4_beta_decay_steps)
+    m4_is_island = (target_cfg["env_mode"] == "islanded")
+    m4_soc_min = float(target_env_cfg.soc_optimal_min)
+    m4_soc_max = float(target_env_cfg.soc_optimal_max)
+    m4_freq_threshold = 0.85
+    print(f"    M4: violation-triggered corrective, beta_init={m4_beta_init}, "
+          f"decay over ~{m4_beta_decay_steps} steps, "
+          f"soc=[{m4_soc_min},{m4_soc_max}], freq_thresh={m4_freq_threshold} (island={m4_is_island})")
 
     # Fine-tuning
     target_buffer = ReplayBuffer(target_obs_dim, target_act_dim, int(1e5), device)
@@ -1524,11 +1462,36 @@ def _run_transfer(
             else:
                 action = target_agent.select_action(obs, deterministic=False)
 
-            # M4: Exponential conservative scaling (replaces linear decay)
-            if transfer_agent is not None:
-                transfer_agent.step()
-                scale = transfer_agent.get_conservative_action_scale()
-                action = action * scale
+            # M4: violation-triggered corrective.
+            # Fires only when SOC or (islanded) frequency actually breaches
+            # its bound. Magnitude scales with breach depth and an exp decay.
+            if conservative and use_M4 and total_steps >= 200:
+                soc = float(obs[0])
+                soc_breach = 0.0
+                if soc < m4_soc_min:
+                    soc_breach = (m4_soc_min - soc) / max(m4_soc_min, 1e-3)
+                elif soc > m4_soc_max:
+                    soc_breach = (soc - m4_soc_max) / max(1.0 - m4_soc_max, 1e-3)
+
+                freq_breach = 0.0
+                if m4_is_island:
+                    freq_norm = float(obs[4])
+                    if abs(freq_norm) > m4_freq_threshold:
+                        freq_breach = abs(freq_norm) - m4_freq_threshold
+
+                breach = max(soc_breach, freq_breach)
+                if breach > 0.0:
+                    decay = float(np.exp(-m4_beta_nu * total_steps))
+                    beta = m4_beta_init * decay * min(breach, 1.0)
+                    if soc < m4_soc_min:
+                        action[0] -= beta
+                    elif soc > m4_soc_max:
+                        action[0] += beta
+                    if freq_breach > 0.0:
+                        freq_norm = float(obs[4])
+                        # Positive freq (gen surplus) -> discharge (positive ESS);
+                        # negative freq (gen deficit) -> charge (negative ESS).
+                        action[0] += 0.5 * beta * float(np.sign(freq_norm))
 
             action = np.clip(action, target_action_low, target_action_high)
             next_obs, reward, terminated, truncated, info = target_env.step(action)
@@ -1563,12 +1526,11 @@ def _run_transfer(
 
     result.training_time_s = time.time() - start_time
 
-    # M1/M3: Store similarity table and freezing status for paper Table 5.x
+    # M1/M3: Store similarity table and warm-start status for paper Table 5.x
     result.metadata = {
         "m1_similarities": constraint_similarities,
         "m1_categories": constraint_categories,
-        "m2_init": m2_init,
-        "m3_frozen": m3_active,
+        "m3_warm_started": m3_warm_started,
         "dims_match": dims_match,
     }
 
