@@ -138,7 +138,7 @@ class TestExpertRuleBase:
     def test_rule_base_to_tsk_params(self):
         rb = expert_rule_base()
         input_names = ["soc", "pv_normalized", "load_normalized", "time_of_day"]
-        means, stds, conseq = rb.to_tsk_params(input_names)
+        means, stds, conseq, confidences = rb.to_tsk_params(input_names)
 
         assert means.shape[0] == len(rb)
         assert means.shape[1] == len(input_names)
