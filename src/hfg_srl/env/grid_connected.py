@@ -39,7 +39,15 @@ class GridConnectedEnv(MicrogridEnv):
         self._init_state()
 
     def _build_fuzzy_constraints(self) -> None:
-        """Initialize fuzzy constraint set."""
+        """Initialize fuzzy constraint set.
+
+        Three hard/semi-hard constraints (soc bounds, grid power limit) plus two
+        *optimal-band* constraints (soc_optimal_min/max) that are ``soft_only``:
+        they pull ``fcsd_min`` down so the cost-critic's soft-deficit term feels
+        the [soc_optimal_min, soc_optimal_max] economic band, but they never
+        trigger ``hard_violated``.  This makes RQ3 transfer shifts (narrowed
+        optimal band) visible to a from-scratch policy.
+        """
         self.fuzzy_constraints = FuzzyConstraintSet(
             agg_method="weighted_average",
             constraints=[
@@ -63,6 +71,22 @@ class GridConnectedEnv(MicrogridEnv):
                     width=200.0,
                     direction="upper",
                     weight=1.0,
+                ),
+                FuzzyConstraint(
+                    name="soc_opt_upper",
+                    threshold=self.cfg.soc_optimal_max,
+                    width=0.1,
+                    direction="upper",
+                    weight=0.3,
+                    soft_only=True,
+                ),
+                FuzzyConstraint(
+                    name="soc_opt_lower",
+                    threshold=self.cfg.soc_optimal_min,
+                    width=0.1,
+                    direction="lower",
+                    weight=0.3,
+                    soft_only=True,
                 ),
             ],
         )
@@ -168,10 +192,14 @@ class GridConnectedEnv(MicrogridEnv):
         total_cost = grid_buy_cost - grid_sell_revenue + de_cost + ess_deg_cost + imbalance_penalty
 
         # Fuzzy constraints — vectorized.
+        # Order must match _build_fuzzy_constraints:
+        #   soc_upper, soc_lower, grid_power_limit, soc_opt_upper, soc_opt_lower
         constraint_values = [
             self.soc,
             self.soc,
             abs(self.grid_power),
+            self.soc,
+            self.soc,
         ]
         fcsd, fcsd_min, violation, hard_violated, _ = self.fuzzy_constraints.compute_all(
             constraint_values

@@ -27,6 +27,11 @@ class FuzzyConstraint:
         width: Fuzzy transition zone width (controls softness).
         direction: 'upper' (value < threshold is safe) or 'lower' (value > threshold is safe).
         weight: Relative importance weight for aggregation.
+        soft_only: If True, this constraint contributes to fcsd_avg and fcsd_min
+            (so the cost-critic soft-deficit term feels it) but does NOT trigger
+            ``hard_violated`` / ``hard_mask``.  Used for *optimal band* constraints
+            (e.g. SOC should sit in [0.4, 0.7] for economics) that are not hard
+            safety limits.
     """
 
     name: str
@@ -34,6 +39,7 @@ class FuzzyConstraint:
     width: float
     direction: str = "upper"  # upper | lower
     weight: float = 1.0
+    soft_only: bool = False
 
     def __post_init__(self) -> None:
         if self.direction not in ("upper", "lower"):
@@ -112,6 +118,7 @@ class FuzzyConstraintSet:
         self._directions = np.array([1.0 if c.direction == "upper" else -1.0 for c in self.constraints])
         self._weights = np.array([c.weight for c in self.constraints], dtype=np.float64)
         self._weights_norm = self._weights / self._weights.sum()
+        self._soft_only = np.array([c.soft_only for c in self.constraints], dtype=bool)
         self._n = n
 
     def add(self, constraint: FuzzyConstraint) -> None:
@@ -162,13 +169,17 @@ class FuzzyConstraintSet:
         return float(np.dot(violations, weights))
 
     def violation_mask(self, values: List[float]) -> np.ndarray:
-        """Boolean mask of constraints whose hard threshold is crossed."""
+        """Boolean mask of constraints whose hard threshold is crossed.
+
+        soft_only constraints always return False here.
+        """
         if len(values) != len(self.constraints):
             raise ValueError(
                 f"Expected {len(self.constraints)} values, got {len(values)}"
             )
         return np.array(
-            [c.is_violated(v) for c, v in zip(self.constraints, values)],
+            [c.is_violated(v) and not c.soft_only
+             for c, v in zip(self.constraints, values)],
             dtype=bool,
         )
 
@@ -177,12 +188,17 @@ class FuzzyConstraintSet:
         return int(np.sum(self.violation_mask(values)))
 
     def max_hard_violation(self, values: List[float]) -> float:
-        """Largest hard violation magnitude across all constraints."""
+        """Largest hard violation magnitude across non-soft_only constraints."""
         if len(values) != len(self.constraints):
             raise ValueError(
                 f"Expected {len(self.constraints)} values, got {len(values)}"
             )
-        return float(np.max([c.hard_violation(v) for c, v in zip(self.constraints, values)]))
+        hard_vals = [
+            c.hard_violation(v)
+            for c, v in zip(self.constraints, values)
+            if not c.soft_only
+        ]
+        return float(np.max(hard_vals)) if hard_vals else 0.0
 
     def __len__(self) -> int:
         return len(self.constraints)
@@ -213,7 +229,11 @@ class FuzzyConstraintSet:
         np.clip(fcsd_vec, 0.0, 1.0, out=fcsd_vec)
 
         # Hard violation: upper -> v > threshold, lower -> v < threshold.
-        hard_mask = (self._directions * (v - self._thresholds)) > 0
+        # soft_only constraints (e.g. optimal SOC band) never count as hard
+        # violations — they only pull fcsd_min down for the soft-deficit cost.
+        hard_mask = (
+            (self._directions * (v - self._thresholds)) > 0
+        ) & (~self._soft_only)
 
         if self.agg_method == "weighted_average":
             fcsd_avg = float(np.dot(fcsd_vec, self._weights_norm))

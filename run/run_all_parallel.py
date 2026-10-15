@@ -44,7 +44,7 @@ N_EPISODES = 200
 ENABLED_RQS = {
     "rq1": False,  # Main comparison: 7 algos x 4 scenarios (already completed)
     "rq2": False,  # Robustness: 6 algos x 7 extremity levels x 5 seeds = 210 runs
-    "rq3": True,   # Transfer: 4 tasks x 5 arms x 5 seeds = 100 runs
+    "rq3": True,   # Transfer Plan C: 4 tasks x 3 core arms + T2 x 2 ablation x 5 seeds = 70 runs
     "rq4": False,  # Ablation: 4 variants on S4
     "rq5": False,  # Sensitivity: 3 axes x 5 values on S2
 }
@@ -81,10 +81,20 @@ RQ2_ALGORITHMS = ["sac", "ppo_lagrangian", "cpo", "safety_layer", "fuzzy_sac", "
 RQ2_LEVELS = [0.8, 1.0, 1.1, 1.2, 1.3, 1.4, 1.5]
 
 RQ3_TASKS = {
-    # T2: grid summer normal -> grid summer extreme, band narrowed [0.3,0.7] -> [0.4,0.7].
-    # M1 showcase: upper band unchanged (sim=1.0, transferable), lower band tightened
-    # (sim ~0.6-0.7, adaptable).  Grid mode has no hard freq/voltage constraints,
-    # so M4 is expected to fire rarely; T2 isolates M1's classification value.
+    # T1: grid summer normal -> grid summer extreme, same battery band [0.3,0.8].
+    # Tests M3 weight transfer under identical safety specs (M1 sim=1.0).
+    # Only weather distribution shifts; no ablation needed (M1/M4 are identity).
+    "T1_grid_same": {
+        "source": {"env_mode": "grid_connected",
+                   "scenario_name": "typical_week_summer",
+                   "extreme_multiplier": None},
+        "target": {"env_mode": "grid_connected",
+                   "scenario_name": "summer_extreme",
+                   "extreme_multiplier": {"pv": 1.2, "load": 1.3, "wt": 0.6}},
+    },
+    # T2: grid summer normal -> grid summer extreme, band narrowed [0.3,0.8] -> [0.4,0.7].
+    # M1/M4 showcase: upper band unchanged (sim=1.0, transferable), lower band tightened
+    # (sim ~0.6-0.7, adaptable).  Only task with no_M1/no_M4 ablations.
     "T2_grid_shifted": {
         "source": {"env_mode": "grid_connected",
                    "scenario_name": "typical_week_summer",
@@ -203,11 +213,15 @@ def build_jobs() -> list:
                         "seed": seed,
                     })
 
-    # --- RQ3: transfer ---
+    # --- RQ3: transfer (Plan C: 4 tasks x 3 core arms; no_M1/no_M4 only on T2) ---
     if ENABLED_RQS["rq3"]:
         for task_name, task_cfg in RQ3_TASKS.items():
             target = task_cfg["target"]
             source = task_cfg["source"]
+            # Plan C: only T2 (band-shift task) gets no_M1/no_M4 ablations.
+            # On T1/T3/T4, M1 is identity (sim=1.0) or M4 fires trivially,
+            # so running those ablations would waste compute with no signal.
+            run_ablations = (task_name == "T2_grid_shifted")
             for seed in SEEDS:
                 # from_scratch (hfg_sac on target)
                 jobs.append({
@@ -227,7 +241,7 @@ def build_jobs() -> list:
                     "scenario_cfg": target,
                     "seed": seed,
                 })
-                # naive transfer
+                # naive transfer (M3 only)
                 jobs.append({
                     "type": "rq3_transfer",
                     "task": task_name,
@@ -237,7 +251,7 @@ def build_jobs() -> list:
                     "conservative": False,
                     "seed": seed,
                 })
-                # hfg conservative transfer
+                # hfg conservative transfer (M1+M3+M4 full pipeline)
                 jobs.append({
                     "type": "rq3_transfer",
                     "task": task_name,
@@ -249,30 +263,31 @@ def build_jobs() -> list:
                     "use_M4": True,
                     "seed": seed,
                 })
-                # ablation: no M1 (skip Jaccard, all constraints forced to adaptable)
-                jobs.append({
-                    "type": "rq3_transfer",
-                    "task": task_name,
-                    "method": "hfg_transfer_no_M1",
-                    "source_cfg": source,
-                    "target_cfg": target,
-                    "conservative": True,
-                    "use_M1": False,
-                    "use_M4": True,
-                    "seed": seed,
-                })
-                # ablation: no M4 (no exponential conservative scaling)
-                jobs.append({
-                    "type": "rq3_transfer",
-                    "task": task_name,
-                    "method": "hfg_transfer_no_M4",
-                    "source_cfg": source,
-                    "target_cfg": target,
-                    "conservative": True,
-                    "use_M1": True,
-                    "use_M4": False,
-                    "seed": seed,
-                })
+                if run_ablations:
+                    # ablation: no M1 (skip Jaccard, all constraints forced to adaptable)
+                    jobs.append({
+                        "type": "rq3_transfer",
+                        "task": task_name,
+                        "method": "hfg_transfer_no_M1",
+                        "source_cfg": source,
+                        "target_cfg": target,
+                        "conservative": True,
+                        "use_M1": False,
+                        "use_M4": True,
+                        "seed": seed,
+                    })
+                    # ablation: no M4 (no exponential conservative scaling)
+                    jobs.append({
+                        "type": "rq3_transfer",
+                        "task": task_name,
+                        "method": "hfg_transfer_no_M4",
+                        "source_cfg": source,
+                        "target_cfg": target,
+                        "conservative": True,
+                        "use_M1": True,
+                        "use_M4": False,
+                        "seed": seed,
+                    })
 
     # --- RQ4: ablation on S4 ---
     if ENABLED_RQS["rq4"]:

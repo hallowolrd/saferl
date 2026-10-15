@@ -156,6 +156,18 @@ class HFGSAC(BaseAgent):
         self._hard_w = getattr(cfg.fuzzy, "hard_violation_cost_weight", 1.0)
         self._soft_w = getattr(cfg.fuzzy, "soft_violation_cost_weight", 0.1)
 
+        # B3: Q-output normalization for the actor loss.  The reward-critic Q is
+        # O(1e5-1e6) (per-step reward ~ -268, gamma=0.99), while the Lagrangian
+        # term lambda * C_hat is O(1) (per-step soft cost ~ 0.01).  Without
+        # normalization the safety gradient is ~6 orders of magnitude weaker than
+        # the SAC gradient and the constraint is numerically inert.  We track an
+        # EMA of Q std and divide the SAC actor-loss term by it, while leaving
+        # lambda*C_hat and the shield hinge penalty at their natural scale.  This
+        # makes the three actor-loss terms comparable (all O(1-10)).
+        self._q_scale_ema = 1.0  # running EMA of |Q| scale
+        self._q_scale_ema_decay = 0.995
+        self._q_scale_min = 1.0  # floor to avoid division by ~0 early in training
+
         self.gamma = a.gamma
         self.tau = a.tau
         self.auto_alpha = a.auto_alpha
@@ -381,7 +393,23 @@ class HFGSAC(BaseAgent):
         q1_new, q2_new = self.critic(obs, shielded_actions_scaled)
         min_q_new = torch.min(q1_new, q2_new).view(-1)
 
-        actor_sac_loss = (self.alpha * log_probs.view(-1) - min_q_new).mean()
+        # B3: update running Q scale (EMA of |Q| magnitude) for actor-loss
+        # normalization.  Detached so this does not create a second gradient path.
+        with torch.no_grad():
+            batch_q_abs = float(min_q_new.detach().abs().mean().item())
+            self._q_scale_ema = (
+                self._q_scale_ema_decay * self._q_scale_ema
+                + (1.0 - self._q_scale_ema_decay) * batch_q_abs
+            )
+        q_scale = max(self._q_scale_ema, self._q_scale_min)
+
+        # Normalize the SAC actor-loss term by q_scale so it is O(1).  The
+        # Lagrangian term (lambda * C_hat) and the shield hinge penalty are
+        # deliberately left at their natural scale (O(1-10)), making all three
+        # actor-loss terms comparable in magnitude.
+        actor_sac_loss = (
+            (self.alpha * log_probs.view(-1) - min_q_new) / q_scale
+        ).mean()
 
         # Lagrangian penalty: lambda * C_hat(s, shielded_action).
         cost_q1_new, cost_q2_new = self.cost_critic(obs, shielded_actions_scaled)
@@ -460,6 +488,7 @@ class HFGSAC(BaseAgent):
             "fcsd_min_batch_mean": fcsd_min.mean().item(),
             "fuzzy_loss": fuzzy_loss.detach().item() if torch.is_tensor(fuzzy_loss) else fuzzy_loss,
             "shaping_weight": self.fuzzy_reward_shaper.current_weight,
+            "q_scale": q_scale,
         }
 
     def _soft_update_target(self) -> None:
