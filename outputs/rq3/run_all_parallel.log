@@ -1,0 +1,6 @@
+[1/90] OK  rq3_scratch        seed=123  cost/d=    33,933  viol=   0.0%  fcsd=0.932  (2259s)
+[2/90] OK  rq3_scratch        seed=123  cost/d=    32,990  viol=   0.0%  fcsd=0.931  (2452s)
+[3/90] OK  rq3_scratch        seed=42  cost/d=    30,543  viol=   0.0%  fcsd=0.996  (4184s)
+[4/90] OK  rq3_scratch        seed=42  cost/d=    20,439  viol=   0.0%  fcsd=0.921  (4870s)
+[5/90] OK  rq3_scratch        seed=456  cost/d=    26,883  viol=   0.0%  fcsd=0.996  (4140s)
+[6/90] OK  rq3_scratch        seed=456  cost/d=    20,093  viol=   0.0%  fcsd=0.924  (3510s)

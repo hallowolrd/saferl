@@ -57,7 +57,7 @@ SKIP_EXISTING = True
 N_WORKERS = 6
 
 # Output directory
-OUTPUT_DIR = ROOT / "outputs" / "experiments"
+OUTPUT_DIR = ROOT / "outputs" / "rq3"
 
 # Device: "auto" | "cpu" | "cuda"
 # CPU is faster for these tiny models (256x256 MLP, 8-9 dim input) —
