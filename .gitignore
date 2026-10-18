@@ -39,3 +39,10 @@ temp/
 
 # Config with secrets
 bak/
+
+# Experiment artifacts / scratch
+rq3.zip
+rq3/
+outputs/experiments/smoke_t2/
+analysis/analysis-output/figures/figure-01-training-curves.pdf
+analysis/analysis-output/figures/figure-01-training-curves.png

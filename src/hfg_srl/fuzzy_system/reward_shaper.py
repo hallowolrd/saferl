@@ -8,7 +8,7 @@ potential-based shaping approach).
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import List, Optional
 
 import numpy as np
 import torch
@@ -67,14 +67,18 @@ class FuzzyRewardShaper(nn.Module):
     def _semantic_input_names(self) -> list:
         """Map each observation index to its expert-rule semantic input name.
 
-        Expert rules use the keys "soc", "pv_normalized", "load_normalized"
-        and "time_of_day". Indices without a corresponding expert set are
-        None (treated as don't-care by the rule base). Observation layout:
+        Expert rules use the keys "soc", "pv_normalized", "load_normalized",
+        "time_of_day". freq/volt are NOT mapped — safety is handled by the
+        fuzzy-Lagrangian upper layer, and shaping on freq/volt was shown to
+        destabilize Q learning (smoke #5/#6: violation rose to 5%+).
 
+        Observation layout:
             grid (8):    soc, pv, wt, load, t, sin, cos, price
             island (9):  soc, pv, wt, load, freq, volt, t, sin, cos
         """
         if self.num_inputs >= 9:
+            # islanded: freq(4)/volt(5) are safety signals handled by
+            # Lagrangian layer, not by shaping.
             return ["soc", "pv_normalized", None, "load_normalized",
                     None, None, "time_of_day", None, None]
         return ["soc", "pv_normalized", None, "load_normalized",
@@ -89,6 +93,28 @@ class FuzzyRewardShaper(nn.Module):
 
         num_rules = min(len(rule_base), self.cfg.num_rules)
         num_mapped_inputs = min(means.shape[1], self.num_inputs)
+
+        # Detect rules whose antecedent keys are ALL absent from the current
+        # observation layout (e.g. R4/R5/R8 reference freq_deviation /
+        # voltage_deviation, which don't exist in grid-connected obs).
+        # Such rules would otherwise default to "don't-care" on every dim
+        # (mean=0, std=5) → membership ≈ 1.0 for all states → inject a constant
+        # offset into Phi(s) that cancels out in PBRS but still biases the
+        # fuzzy system's learned initialization. Zero their consequents.
+        # Empty antecedent (R0 neutral baseline) = don't-care on ALL dims,
+        # which is intentional — must NOT be skipped.
+        available_semantic_inputs = {n for n in input_names if n is not None}
+        skipped_rules: List[int] = []
+        for r_idx, rule in enumerate(rule_base.rules[:num_rules]):
+            if len(rule.antecedent) == 0:
+                continue  # neutral baseline: fires for all states
+            has_any_mapped = any(
+                key in available_semantic_inputs for key in rule.antecedent
+            )
+            if not has_any_mapped:
+                conseq[r_idx, :] = 0.0
+                confidences[r_idx] = 0.0
+                skipped_rules.append(r_idx)
 
         with torch.no_grad():
             self.fuzzy_system.membership.means[:num_rules, :num_mapped_inputs] = (
@@ -112,6 +138,11 @@ class FuzzyRewardShaper(nn.Module):
             else:
                 self.fuzzy_system.consequent[:num_rules, :] = torch.zeros(num_rules, 1)
 
+        if skipped_rules:
+            logger.info(
+                f"Skipped {len(skipped_rules)} rule(s) with no mapped antecedent "
+                f"in current obs layout (rule indices: {skipped_rules})."
+            )
         logger.info(
             f"Initialized fuzzy reward shaper from {num_rules} expert rules "
             f"({num_mapped_inputs} input dimensions mapped)."

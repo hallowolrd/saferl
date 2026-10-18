@@ -42,22 +42,23 @@ N_EPISODES = 200
 
 # Which RQs to run (comment out / remove to skip)
 ENABLED_RQS = {
-    "rq1": False,  # Main comparison: 7 algos x 4 scenarios (already completed)
-    "rq2": False,  # Robustness: 6 algos x 7 extremity levels x 5 seeds = 210 runs
-    "rq3": True,   # Transfer Plan C: 4 tasks x 3 core arms + T2 x 2 ablation x 5 seeds = 70 runs
-    "rq4": False,  # Ablation: 4 variants on S4
-    "rq5": False,  # Sensitivity: 3 axes x 5 values on S2
+    "rq1": True,   # Main comparison: 6 algos x 4 scenarios x 5 seeds = 120 runs
+    "rq2": True,   # Robustness: 5 algos x 7 extremity levels x 5 seeds = 175 runs
+    "rq3": True,   # Transfer: T2+T4, 6 arms each x 5 seeds = 60 runs (incl. no_M1/no_M4)
+    "rq4": True,   # Ablation: 4 variants on S4 x 5 seeds = 20 runs
+    "rq5": False,  # Sensitivity: 1 axis x 5 values x 5 seeds = 25 runs
 }
 
 # If True, skip runs whose result JSON already exists (good for resuming).
 # If False, retrain everything from scratch (overwrites existing JSONs).
-SKIP_EXISTING = True
+# Set False for full rerun with new config (500 kW, fcsd_target=0.90, M4 v2).
+SKIP_EXISTING = False
 
 # Parallel workers (each worker is one process; tune to your CPU/GPU)
 N_WORKERS = 6
 
 # Output directory
-OUTPUT_DIR = ROOT / "outputs" / "rq3"
+OUTPUT_DIR = ROOT / "outputs" / "experiments"
 
 # Device: "auto" | "cpu" | "cuda"
 # CPU is faster for these tiny models (256x256 MLP, 8-9 dim input) —
@@ -68,30 +69,37 @@ DEVICE = "cpu"
 # Experiment matrices (do not edit unless you know what you're doing)
 # ============================================================================
 
+# RQ1 main comparison: non-safe baselines (sac, ppo), safe baselines
+# (ppo_lagrangian, cpo, safety_layer), and our HFG-SAC.
+# fuzzy_sac intentionally EXCLUDED — it is the lower-layer-only ablation of
+# hfg_sac (used in RQ4), not an independent SOTA baseline.
 RQ1_ALGORITHMS = [
     "sac", "ppo", "ppo_lagrangian", "cpo",
-    "safety_layer", "fuzzy_sac", "hfg_sac",
+    "safety_layer", "hfg_sac",
 ]
 RQ1_SCENARIOS = [
     "S1_grid_normal", "S2_grid_extreme",
     "S3_island_normal", "S4_island_extreme",
 ]
 
-RQ2_ALGORITHMS = ["sac", "ppo_lagrangian", "cpo", "safety_layer", "fuzzy_sac", "hfg_sac"]
+# RQ2 robustness: same safe-RL lineup as RQ1 (fuzzy_sac excluded for the
+# same reason).
+RQ2_ALGORITHMS = ["sac", "ppo_lagrangian", "cpo", "safety_layer", "hfg_sac"]
 RQ2_LEVELS = [0.8, 1.0, 1.1, 1.2, 1.3, 1.4, 1.5]
 
 RQ3_TASKS = {
-    # T1: grid summer normal -> grid summer extreme, same battery band [0.3,0.8].
-    # Tests M3 weight transfer under identical safety specs (M1 sim=1.0).
-    # Only weather distribution shifts; no ablation needed (M1/M4 are identity).
-    "T1_grid_same": {
-        "source": {"env_mode": "grid_connected",
-                   "scenario_name": "typical_week_summer",
-                   "extreme_multiplier": None},
-        "target": {"env_mode": "grid_connected",
-                   "scenario_name": "summer_extreme",
-                   "extreme_multiplier": {"pv": 1.2, "load": 1.3, "wt": 0.6}},
-    },
+    # T1: grid same-band task — DROPPED 2026-10-16.
+    # M1=identity (Jaccard sim=1.0) and M4 never fire under identical safety band,
+    # so it only demonstrates M3 weight warm-start, which is already covered by
+    # naive_transfer vs hfg_transfer contrast on T2/T4. Cutting saves 20 jobs.
+    # "T1_grid_same": {
+    #     "source": {"env_mode": "grid_connected",
+    #                "scenario_name": "typical_week_summer",
+    #                "extreme_multiplier": None},
+    #     "target": {"env_mode": "grid_connected",
+    #                "scenario_name": "summer_extreme",
+    #                "extreme_multiplier": {"pv": 1.2, "load": 1.3, "wt": 0.6}},
+    # },
     # T2: grid summer normal -> grid summer extreme, band narrowed [0.3,0.8] -> [0.4,0.7].
     # M1/M4 showcase: upper band unchanged (sim=1.0, transferable), lower band tightened
     # (sim ~0.6-0.7, adaptable).  Only task with no_M1/no_M4 ablations.
@@ -104,38 +112,39 @@ RQ3_TASKS = {
                    "extreme_multiplier": {"pv": 1.2, "load": 1.3, "wt": 0.6},
                    "soc_optimal_min": 0.4, "soc_optimal_max": 0.7},
     },
-    # T3: island normal -> island extreme, same battery band [0.3, 0.8]
-    # Tests M3 weight transfer under identical safety specs (M1 sim=1.0).
-    "T3_island_same": {
-        "source": {"env_mode": "islanded",
-                   "scenario_name": "typical_week_summer",
-                   "extreme_multiplier": None,
-                   "interruptible_load_kw": 600.0,
-                   "freq_penalty_slope": 1500.0,
-                   "freq_volt_shield_safety_ratio": 0.15,
-                   "load_shed_cost": 1.0},
-        "target": {"env_mode": "islanded",
-                   "scenario_name": "summer_extreme",
-                   "extreme_multiplier": {"pv": 0.5, "load": 1.25, "wt": 0.8},
-                   "interruptible_load_kw": 600.0,
-                   "freq_penalty_slope": 1500.0,
-                   "freq_volt_shield_safety_ratio": 0.15,
-                   "load_shed_cost": 1.0},
-    },
+    # T3: island same-band task — DROPPED 2026-10-16.
+    # Same rationale as T1: M1=identity, M4 trivially fires, only demonstrates M3.
+    # Island-side M1/M4 evidence is provided by T4 below. Cutting saves 20 jobs.
+    # "T3_island_same": {
+    #     "source": {"env_mode": "islanded",
+    #                "scenario_name": "typical_week_summer",
+    #                "extreme_multiplier": None,
+    #                "interruptible_load_kw": 600.0,
+    #                "freq_penalty_slope": 1500.0,
+    #                "freq_volt_shield_safety_ratio": 0.15,
+    #                "load_shed_cost": 1.0},
+    #     "target": {"env_mode": "islanded",
+    #                "scenario_name": "summer_extreme",
+    #                "extreme_multiplier": {"pv": 0.5, "load": 1.25, "wt": 0.8},
+    #                "interruptible_load_kw": 600.0,
+    #                "freq_penalty_slope": 1500.0,
+    #                "freq_volt_shield_safety_ratio": 0.15,
+    #                "load_shed_cost": 1.0},
+    # },
     # T4: island normal -> island extreme, target battery band narrowed to [0.4, 0.7]
     # Tests M4 conservative scaling when safety band shifts (M1 soc sim ~0.6-0.8).
     "T4_island_shifted": {
         "source": {"env_mode": "islanded",
                    "scenario_name": "typical_week_summer",
                    "extreme_multiplier": None,
-                   "interruptible_load_kw": 600.0,
+                   "interruptible_load_kw": 500.0,
                    "freq_penalty_slope": 1500.0,
                    "freq_volt_shield_safety_ratio": 0.15,
                    "load_shed_cost": 1.0},
         "target": {"env_mode": "islanded",
                    "scenario_name": "summer_extreme",
                    "extreme_multiplier": {"pv": 0.5, "load": 1.25, "wt": 0.8},
-                   "interruptible_load_kw": 600.0,
+                   "interruptible_load_kw": 500.0,
                    "freq_penalty_slope": 1500.0,
                    "freq_volt_shield_safety_ratio": 0.15,
                    "load_shed_cost": 1.0,
@@ -178,7 +187,7 @@ def _extremity_cfg(level: float) -> dict:
         "freq_penalty_slope": 1500.0,
         "freq_volt_shield_safety_ratio": 0.15,
         "load_shed_cost": 1.0,
-        "fcsd_target": 0.85,  # SANITY: tighten fuzzy constraint from 0.75 to 0.85
+        "fcsd_target": 0.90,  # tighten fuzzy constraint target
     }
 
 
@@ -218,10 +227,8 @@ def build_jobs() -> list:
         for task_name, task_cfg in RQ3_TASKS.items():
             target = task_cfg["target"]
             source = task_cfg["source"]
-            # Plan C: only T2 (band-shift task) gets no_M1/no_M4 ablations.
-            # On T1/T3/T4, M1 is identity (sim=1.0) or M4 fires trivially,
-            # so running those ablations would waste compute with no signal.
-            run_ablations = (task_name == "T2_grid_shifted")
+            # Ablations enabled: no_M1/no_M4 on T2 and T4 for full RQ3 evidence.
+            run_ablations = True
             for seed in SEEDS:
                 # from_scratch (hfg_sac on target)
                 jobs.append({
@@ -442,7 +449,9 @@ def run_job(job: dict) -> dict:
         "job": job,
         "cost_per_day": r.cost_per_day,
         "violation_rate": r.violation_rate,
+        "soft_violation_rate": r.soft_violation_rate,
         "avg_fcsd": r.avg_fcsd,
+        "min_fcsd": r.min_fcsd,
         "elapsed_s": elapsed,
         "output": str(out_path),
     }
@@ -508,8 +517,9 @@ def main() -> None:
                 msg = (f"[{done}/{total}] OK  {res['job']['type']:18s} "
                        f"seed={job['seed']}  "
                        f"cost/d={res['cost_per_day']:>10,.0f}  "
-                       f"viol={res['violation_rate']:>6.1f}%  "
-                       f"fcsd={res['avg_fcsd']:.3f}  "
+                       f"hard={res['violation_rate']:>5.1f}%  "
+                       f"soft={res['soft_violation_rate']:>5.1f}%  "
+                       f"min_fcsd={res['min_fcsd']:.3f}  "
                        f"({res['elapsed_s']:.0f}s)")
             except Exception as e:  # noqa: BLE001
                 failed += 1

@@ -144,98 +144,118 @@ class FuzzyRuleBase:
 # --- Predefined expert rule base for microgrid dispatch ---
 
 def expert_rule_base() -> FuzzyRuleBase:
-    """Create a pre-populated expert rule base for microgrid ESS dispatch.
+    """Create expert rule base combining economic dispatch heuristics with
+    safety-critical state penalties, used as PBRS potential Phi(s).
 
-    Encodes common operating heuristics from grid operators:
-    - SOC low -> reduce discharge / increase charge
-    - PV high + SOC high -> reduce charge / increase discharge
-    - Peak price hours -> discharge more
-    - High load -> discharge to support
+    Design (post-RQ4 feedback):
+    - Economic rules R1-R8 (restored from pre-fix action-bias): encode
+      microgrid operating heuristics — charge at low SOC / high PV,
+      discharge at high SOC / peak load. These consequents produce
+      cost-efficient policy (smoke: cost=5,808/day vs shaping-off 6,332).
+    - Safety rules R9-R11 (new): strong negative consequents for freq/volt
+      critical states, creating PBRS gradient away from unsafe operation.
+
+    Combined Phi range: roughly [-1.0, 0.7]. With weight=300, shaping
+    magnitude ~ 300 * 0.5 = 150 ~ 0.7% of Q (~22k).
     """
     rb = FuzzyRuleBase()
 
-    # Define fuzzy sets for inputs (normalized to [-1, 1] or [0, 1])
+    # --- Input fuzzy sets ---
     rb.add_input_sets("soc", [
         FuzzySetDef("LOW", 0.25, 0.12),
-        FuzzySetDef("MEDIUM", 0.5, 0.15),
+        FuzzySetDef("MEDIUM", 0.50, 0.15),
         FuzzySetDef("HIGH", 0.75, 0.12),
     ])
     rb.add_input_sets("pv_normalized", [
-        FuzzySetDef("LOW", 0.1, 0.1),
-        FuzzySetDef("MEDIUM", 0.5, 0.2),
-        FuzzySetDef("HIGH", 0.9, 0.1),
+        FuzzySetDef("LOW", 0.10, 0.10),
+        FuzzySetDef("MEDIUM", 0.50, 0.20),
+        FuzzySetDef("HIGH", 0.90, 0.10),
     ])
     rb.add_input_sets("load_normalized", [
-        FuzzySetDef("LOW", 0.3, 0.12),
-        FuzzySetDef("MEDIUM", 0.6, 0.15),
-        FuzzySetDef("HIGH", 0.9, 0.1),
+        FuzzySetDef("LOW", 0.30, 0.12),
+        FuzzySetDef("MEDIUM", 0.60, 0.15),
+        FuzzySetDef("HIGH", 0.90, 0.10),
     ])
     rb.add_input_sets("time_of_day", [
-        FuzzySetDef("NIGHT", 0.1, 0.08),
-        FuzzySetDef("MORNING", 0.3, 0.08),
-        FuzzySetDef("MIDDAY", 0.5, 0.08),
-        FuzzySetDef("EVENING", 0.8, 0.08),
+        FuzzySetDef("NIGHT", 0.10, 0.08),
+        FuzzySetDef("MORNING", 0.30, 0.08),
+        FuzzySetDef("MIDDAY", 0.50, 0.08),
+        FuzzySetDef("EVENING", 0.80, 0.08),
     ])
 
-    # Define rules (output: ess_power_bias in [-1, 1], positive = charge bias)
-    rules = [
-        # Rule 1: SOC low -> charge more (discharge less)
+    # --- Safety deviation sets (islanded only) ---
+    rb.add_input_sets("freq_deviation", [
+        FuzzySetDef("NOMINAL", 0.15, 0.10),
+        FuzzySetDef("WARNING", 0.55, 0.20),
+        FuzzySetDef("CRITICAL", 1.20, 0.30),
+    ])
+    rb.add_input_sets("voltage_deviation", [
+        FuzzySetDef("NOMINAL", 0.15, 0.10),
+        FuzzySetDef("WARNING", 0.55, 0.20),
+        FuzzySetDef("CRITICAL", 1.20, 0.30),
+    ])
+
+    # --- Economic rules (R1-R8): ESS dispatch heuristics ---
+    # Positive consequent = state where ESS should charge (Phi high).
+    # Negative consequent = state where ESS should discharge (Phi low).
+    # PBRS gradient then naturally pushes policy toward efficient operation.
+    economic_rules = [
         FuzzyRule(
             antecedent={"soc": "LOW"},
-            consequent={"ess_power_bias": 0.5},
+            consequent={"potential_value": 0.5},
             confidence=0.9,
             source="expert: low_soc_protection",
         ),
-        # Rule 2: SOC high -> discharge more
         FuzzyRule(
             antecedent={"soc": "HIGH"},
-            consequent={"ess_power_bias": -0.4},
+            consequent={"potential_value": -0.4},
             confidence=0.8,
             source="expert: high_soc_utilization",
         ),
-        # Rule 3: High PV + not high SOC -> charge
         FuzzyRule(
             antecedent={"pv_normalized": "HIGH", "soc": "MEDIUM"},
-            consequent={"ess_power_bias": 0.3},
+            consequent={"potential_value": 0.3},
             confidence=0.7,
             source="expert: pv_charge",
         ),
-        # Rule 4: High load + high SOC -> discharge
         FuzzyRule(
             antecedent={"load_normalized": "HIGH", "soc": "MEDIUM"},
-            consequent={"ess_power_bias": -0.3},
+            consequent={"potential_value": -0.3},
             confidence=0.7,
             source="expert: peak_support",
         ),
-        # Rule 5: Morning peak + medium SOC -> support load
         FuzzyRule(
             antecedent={"time_of_day": "MORNING", "load_normalized": "HIGH"},
-            consequent={"ess_power_bias": -0.25},
+            consequent={"potential_value": -0.25},
             confidence=0.6,
             source="expert: morning_peak",
         ),
-        # Rule 6: Evening peak + medium SOC -> support load
         FuzzyRule(
             antecedent={"time_of_day": "EVENING", "soc": "MEDIUM"},
-            consequent={"ess_power_bias": -0.3},
+            consequent={"potential_value": -0.3},
             confidence=0.65,
             source="expert: evening_peak",
         ),
-        # Rule 7: Midday high PV + low SOC -> charge aggressively
         FuzzyRule(
-            antecedent={"time_of_day": "MIDDAY", "pv_normalized": "HIGH", "soc": "LOW"},
-            consequent={"ess_power_bias": 0.7},
+            antecedent={"time_of_day": "MIDDAY", "pv_normalized": "HIGH",
+                        "soc": "LOW"},
+            consequent={"potential_value": 0.7},
             confidence=0.85,
             source="expert: midday_charge",
         ),
-        # Rule 8: Night + high SOC -> ready for morning
         FuzzyRule(
             antecedent={"time_of_day": "NIGHT", "soc": "HIGH"},
-            consequent={"ess_power_bias": -0.1},
+            consequent={"potential_value": -0.1},
             confidence=0.5,
             source="expert: night_standby",
         ),
     ]
 
-    rb.add_rules(rules)
+    # Safety is handled entirely by the fuzzy-Lagrangian upper layer
+    # (cost critic + adaptive lambda). Adding freq/volt to shaping was
+    # tested in smoke (#5/#6) and HURT violation rate (5%+ vs 3.4% pre-fix):
+    # large Phi jumps at freq critical destabilized Q learning.
+    # Shaping stays economic-only; freq/volt mapping returns None.
+
+    rb.add_rules(economic_rules)
     return rb

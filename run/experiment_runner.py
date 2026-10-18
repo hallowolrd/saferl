@@ -64,7 +64,7 @@ SCENARIOS = {
         # S3 and S4 share identical safety resources (same interruptible load,
         # same shed cost, same shield margin). Only weather differs: S3 normal
         # summer, S4 extreme summer (PV x0.5, load x1.25, WT x0.8).
-        "interruptible_load_kw": 600.0,
+        "interruptible_load_kw": 500.0,
         "freq_penalty_slope": 1500.0,
         "freq_volt_shield_safety_ratio": 0.15,
         "load_shed_cost": 1.0,
@@ -77,8 +77,9 @@ SCENARIOS = {
         # Plan D: relax shield from 0.10 -> 0.15 (allow freq closer to 0.5 Hz),
         # reduce freq penalty 3000 -> 1500, and halve load-shed unit cost
         # (2.0 -> 1.0 RMB/kWh) so the policy uses shedding as a last resort
-        # rather than a continuous buffer.  interruptible_load stays at 600 kW.
-        "interruptible_load_kw": 600.0,
+        # rather than a continuous buffer.  interruptible_load set to 500 kW
+        # to align with RQ2 extremity midpoint.
+        "interruptible_load_kw": 500.0,
         "freq_penalty_slope": 1500.0,
         "freq_volt_shield_safety_ratio": 0.15,
         "load_shed_cost": 1.0,
@@ -114,6 +115,7 @@ class RunResult:
     total_cost: float = 0.0
     cost_per_day: float = 0.0
     violation_rate: float = 0.0
+    soft_violation_rate: float = 0.0
     avg_fcsd: float = 0.0
     min_fcsd: float = 1.0
     max_violation: float = 0.0
@@ -128,6 +130,7 @@ class RunResult:
     # Eval results (final)
     eval_costs: List[float] = field(default_factory=list)
     eval_violations: List[float] = field(default_factory=list)
+    eval_soft_violations: List[float] = field(default_factory=list)
     eval_fcsds: List[float] = field(default_factory=list)
     # Extra metadata (e.g., transfer similarity table)
     metadata: Dict = field(default_factory=dict)
@@ -256,19 +259,19 @@ def train_agent(
             and (scenario_cfg.get("extreme_multiplier") or {}).get("pv", 1.0) < 0.8
         )
     )
-    fcsd_target = scenario_cfg.get("fcsd_target") or (0.75 if is_s4_extreme else 0.85)
+    fcsd_target = scenario_cfg.get("fcsd_target") or 0.90
 
     # S4: fire B1 freq/voltage shield earlier (at freq>0.20 Hz instead of
     # 0.35 Hz) so it activates while DE/shed still have headroom.
     shield_safety_ratio = scenario_cfg.get("freq_volt_shield_safety_ratio", 0.175)
 
     fuzzy_cfg = FuzzyConfig(
-        num_rules=16,
+        num_rules=8,
         num_inputs=9 if scenario_cfg["env_mode"] == "islanded" else 8,
         fcsd_target=fcsd_target,
         use_expert_rules=("no_fuzzyknow" not in algorithm_name),
-        reward_shaping_weight_init=0.3 if "no_fuzzyknow" not in algorithm_name else 0.0,
-        reward_shaping_weight_final=0.01,
+        reward_shaping_weight_init=150.0 if "no_fuzzyknow" not in algorithm_name else 0.0,
+        reward_shaping_weight_final=8.0 if "no_fuzzyknow" not in algorithm_name else 0.0,
         reward_shaping_decay_steps=10000,
         # Cost-return Lagrangian scale: C_hat ~ discounted deficit (~10-30),
         # Q ~ return-scale cost (~1000-2000). lambda ~ O(1) balances them.
@@ -434,9 +437,10 @@ def train_agent(
         # below remains the authoritative number.  This cuts mid-training
         # eval step count by ~80%.
         if (episode + 1) % 50 == 0 or episode == n_episodes - 1:
-            eval_metrics = evaluate_agent(agent, env, n_episodes=1)
+            eval_metrics = evaluate_agent(agent, env, n_episodes=1, fcsd_target=fcsd_target)
             result.eval_costs.append(eval_metrics["cost_mean"])
             result.eval_violations.append(eval_metrics["violation_rate_mean"])
+            result.eval_soft_violations.append(eval_metrics["soft_violation_rate_mean"])
             result.eval_fcsds.append(eval_metrics["fcsd_mean"])
 
             ckpt_score = _ckpt_score(eval_metrics["cost_mean"], eval_metrics["violation_rate_mean"])
@@ -449,10 +453,11 @@ def train_agent(
     result.training_time_s = time.time() - start_time
 
     # Final evaluation
-    final_eval = evaluate_agent(agent, env, n_episodes=10)
+    final_eval = evaluate_agent(agent, env, n_episodes=10, fcsd_target=fcsd_target)
     result.total_cost = final_eval["cost_mean"]
     result.cost_per_day = final_eval["cost_mean"] / 7.0
     result.violation_rate = final_eval["violation_rate_mean"]
+    result.soft_violation_rate = final_eval["soft_violation_rate_mean"]
     result.avg_fcsd = final_eval["fcsd_mean"]
     result.min_fcsd = final_eval["fcsd_min"]
     result.final_reward = final_eval["reward_mean"]
@@ -479,18 +484,27 @@ def train_agent(
             json.dump(asdict(result), f, indent=2)
 
     print(f"  [{algorithm_name} on {scenario_name} seed={seed}] "
-          f"cost={result.total_cost:.1f}  viol={result.violation_rate:.2f}%  "
-          f"fcsd={result.avg_fcsd:.4f}  time={result.training_time_s:.1f}s")
+          f"cost={result.total_cost:.1f}  hard={result.violation_rate:.2f}%  "
+          f"soft={result.soft_violation_rate:.2f}%  "
+          f"fcsd={result.avg_fcsd:.4f}  min_fcsd={result.min_fcsd:.3f}  "
+          f"time={result.training_time_s:.1f}s")
 
     return result
 
 
-def evaluate_agent(agent, env, n_episodes: int = 5) -> Dict[str, float]:
-    """Evaluate agent and return metrics."""
+def evaluate_agent(agent, env, n_episodes: int = 5, fcsd_target: float = 0.90) -> Dict[str, float]:
+    """Evaluate agent and return metrics.
+
+    Args:
+        fcsd_target: Soft safety threshold. A step with fcsd_min < fcsd_target
+            counts as a *soft* violation (near-miss), in addition to the hard
+            violation flag from the env.
+    """
     agent.eval()
     costs = []
     rewards = []
     violation_rates = []
+    soft_violation_rates = []
     fcsds = []
     fcsd_mins = []
 
@@ -499,6 +513,7 @@ def evaluate_agent(agent, env, n_episodes: int = 5) -> Dict[str, float]:
         ep_cost = 0.0
         ep_reward = 0.0
         ep_violations = 0
+        ep_soft_violations = 0
         ep_fcsd_sum = 0.0
         ep_min_fcsd = 1.0
         steps = 0
@@ -513,15 +528,19 @@ def evaluate_agent(agent, env, n_episodes: int = 5) -> Dict[str, float]:
             ep_cost += info.get("cost", 0.0)
             ep_reward += reward
             fcsd = info.get("fcsd", 1.0)
+            fcsd_min = info.get("fcsd_min", 1.0)
             ep_fcsd_sum += fcsd
-            ep_min_fcsd = min(ep_min_fcsd, fcsd)
+            ep_min_fcsd = min(ep_min_fcsd, fcsd_min)
             if info.get("violated", False):
                 ep_violations += 1
+            if fcsd_min < fcsd_target:
+                ep_soft_violations += 1
             steps += 1
 
         costs.append(ep_cost)
         rewards.append(ep_reward)
         violation_rates.append(ep_violations / max(steps, 1) * 100.0)
+        soft_violation_rates.append(ep_soft_violations / max(steps, 1) * 100.0)
         fcsds.append(ep_fcsd_sum / max(steps, 1))
         fcsd_mins.append(ep_min_fcsd)
 
@@ -534,6 +553,8 @@ def evaluate_agent(agent, env, n_episodes: int = 5) -> Dict[str, float]:
         "reward_std": float(np.std(rewards)),
         "violation_rate_mean": float(np.mean(violation_rates)),
         "violation_rate_std": float(np.std(violation_rates)),
+        "soft_violation_rate_mean": float(np.mean(soft_violation_rates)),
+        "soft_violation_rate_std": float(np.std(soft_violation_rates)),
         "fcsd_mean": float(np.mean(fcsds)),
         "fcsd_std": float(np.std(fcsds)),
         "fcsd_min": float(np.min(fcsd_mins)),
@@ -646,12 +667,15 @@ def run_main_comparison(
         for algo_name, results_list in scenario_data.get("rl_algorithms", {}).items():
             costs = [r.total_cost for r in results_list]
             viols = [r.violation_rate for r in results_list]
+            soft_viols = [r.soft_violation_rate for r in results_list]
             fcsds = [r.avg_fcsd for r in results_list]
             summary[scenario_name][algo_name] = {
                 "cost_mean": float(np.mean(costs)),
                 "cost_std": float(np.std(costs)),
                 "violation_rate_mean": float(np.mean(viols)),
                 "violation_rate_std": float(np.std(viols)),
+                "soft_violation_rate_mean": float(np.mean(soft_viols)),
+                "soft_violation_rate_std": float(np.std(soft_viols)),
                 "fcsd_mean": float(np.mean(fcsds)),
                 "fcsd_std": float(np.std(fcsds)),
             }
@@ -693,6 +717,7 @@ def run_ablation_study(
     for name, results_list in ablation_results.items():
         costs = [r.total_cost for r in results_list]
         viols = [r.violation_rate for r in results_list]
+        soft_viols = [r.soft_violation_rate for r in results_list]
         fcsds = [r.avg_fcsd for r in results_list]
         convs = [r.convergence_episode for r in results_list]
         summary[name] = {
@@ -700,6 +725,8 @@ def run_ablation_study(
             "cost_std": float(np.std(costs)),
             "violation_rate_mean": float(np.mean(viols)),
             "violation_rate_std": float(np.std(viols)),
+            "soft_violation_rate_mean": float(np.mean(soft_viols)),
+            "soft_violation_rate_std": float(np.std(soft_viols)),
             "fcsd_mean": float(np.mean(fcsds)),
             "fcsd_std": float(np.std(fcsds)),
             "convergence_mean": float(np.mean(convs)),
@@ -790,12 +817,15 @@ def run_sensitivity_analysis(
         for value, results_list in param_results.items():
             costs = [r.total_cost for r in results_list]
             viols = [r.violation_rate for r in results_list]
+            soft_viols = [r.soft_violation_rate for r in results_list]
             fcsds = [r.avg_fcsd for r in results_list]
             summary[param_name][value] = {
                 "cost_mean": float(np.mean(costs)),
                 "cost_std": float(np.std(costs)),
                 "violation_rate_mean": float(np.mean(viols)),
                 "violation_rate_std": float(np.std(viols)),
+                "soft_violation_rate_mean": float(np.mean(soft_viols)),
+                "soft_violation_rate_std": float(np.std(soft_viols)),
                 "fcsd_mean": float(np.mean(fcsds)),
                 "fcsd_std": float(np.std(fcsds)),
             }
@@ -839,7 +869,7 @@ def _train_with_param(
         log_interval=500,
     )
 
-    fcsd_t = fcsd_target if fcsd_target is not None else 0.85
+    fcsd_t = fcsd_target if fcsd_target is not None else 0.90
     sw_init = shaping_weight if shaping_weight is not None else 0.3
     # Map constraint_width (β sweep) to the real fuzzy boundary knob:
     # hard_violation_threshold — the FCSD boundary between hard and soft
@@ -935,10 +965,11 @@ def _train_with_param(
         result.episode_fcsds.append(episode_fcsd_sum / max(step + 1, 1))
 
     result.training_time_s = time.time() - start_time
-    final_eval = evaluate_agent(agent, env, n_episodes=10)
+    final_eval = evaluate_agent(agent, env, n_episodes=10, fcsd_target=fcsd_t)
     result.total_cost = final_eval["cost_mean"]
     result.cost_per_day = final_eval["cost_mean"] / 7.0
     result.violation_rate = final_eval["violation_rate_mean"]
+    result.soft_violation_rate = final_eval["soft_violation_rate_mean"]
     result.avg_fcsd = final_eval["fcsd_mean"]
     result.min_fcsd = final_eval["fcsd_min"]
     result.final_reward = final_eval["reward_mean"]
@@ -992,11 +1023,14 @@ def run_extremity_analysis(
         for level, results_list in algo_data.items():
             costs = [r.total_cost for r in results_list]
             viols = [r.violation_rate for r in results_list]
+            soft_viols = [r.soft_violation_rate for r in results_list]
             summary[algo][level] = {
                 "cost_mean": float(np.mean(costs)),
                 "cost_std": float(np.std(costs)),
                 "violation_rate_mean": float(np.mean(viols)),
                 "violation_rate_std": float(np.std(viols)),
+                "soft_violation_rate_mean": float(np.mean(soft_viols)),
+                "soft_violation_rate_std": float(np.std(soft_viols)),
             }
 
     with open(output_dir / "results" / "extremity_summary.json", "w") as f:
@@ -1055,7 +1089,7 @@ def run_transfer_experiments(
                 "env_mode": "islanded",
                 "scenario_name": "typical_week_summer",
                 "extreme_multiplier": None,
-                "interruptible_load_kw": 600.0,
+                "interruptible_load_kw": 500.0,
                 "freq_penalty_slope": 1500.0,
                 "freq_volt_shield_safety_ratio": 0.15,
                 "load_shed_cost": 1.0,
@@ -1064,7 +1098,7 @@ def run_transfer_experiments(
                 "env_mode": "islanded",
                 "scenario_name": "summer_extreme",
                 "extreme_multiplier": {"pv": 0.5, "load": 1.25, "wt": 0.8},
-                "interruptible_load_kw": 600.0,
+                "interruptible_load_kw": 500.0,
                 "freq_penalty_slope": 1500.0,
                 "freq_volt_shield_safety_ratio": 0.15,
                 "load_shed_cost": 1.0,
@@ -1076,7 +1110,7 @@ def run_transfer_experiments(
                 "env_mode": "islanded",
                 "scenario_name": "typical_week_summer",
                 "extreme_multiplier": None,
-                "interruptible_load_kw": 600.0,
+                "interruptible_load_kw": 500.0,
                 "freq_penalty_slope": 1500.0,
                 "freq_volt_shield_safety_ratio": 0.15,
                 "load_shed_cost": 1.0,
@@ -1085,7 +1119,7 @@ def run_transfer_experiments(
                 "env_mode": "islanded",
                 "scenario_name": "summer_extreme",
                 "extreme_multiplier": {"pv": 0.5, "load": 1.25, "wt": 0.8},
-                "interruptible_load_kw": 600.0,
+                "interruptible_load_kw": 500.0,
                 "freq_penalty_slope": 1500.0,
                 "freq_volt_shield_safety_ratio": 0.15,
                 "load_shed_cost": 1.0,
@@ -1160,12 +1194,15 @@ def run_transfer_experiments(
         for method, results_list in task_data.items():
             costs = [r.total_cost for r in results_list]
             viols = [r.violation_rate for r in results_list]
+            soft_viols = [r.soft_violation_rate for r in results_list]
             convs = [r.convergence_episode for r in results_list]
             summary[task_name][method] = {
                 "cost_mean": float(np.mean(costs)),
                 "cost_std": float(np.std(costs)),
                 "violation_rate_mean": float(np.mean(viols)),
                 "violation_rate_std": float(np.std(viols)),
+                "soft_violation_rate_mean": float(np.mean(soft_viols)),
+                "soft_violation_rate_std": float(np.std(soft_viols)),
                 "convergence_mean": float(np.mean(convs)),
                 "convergence_std": float(np.std(convs)),
             }
@@ -1258,19 +1295,22 @@ def _run_transfer(
         algorithm=AlgorithmConfig(
             name="hfg_sac",
             hidden_dims=[256, 256],
-            batch_size=128,
+            batch_size=256,
             buffer_size=int(1e5),
             warmup_steps=500,
             eval_interval=2000,
             log_interval=500,
         ),
         fuzzy=FuzzyConfig(
-            num_rules=16,
+            num_rules=8,
             num_inputs=8 if source_cfg["env_mode"] == "grid_connected" else 9,
-            fcsd_target=0.85,
+            fcsd_target=0.90,
             use_expert_rules=True,
-            reward_shaping_weight_init=0.3,
-            reward_shaping_weight_final=0.01,
+            # Synced with RQ4-tuned scratch weights (was 0.3/0.01 — too small to
+            # lift fuzzy shaping signal above env-cost scale).  150/8 matches the
+            # scratch path in train_agent so source/target are comparable to RQ1/RQ2.
+            reward_shaping_weight_init=150.0,
+            reward_shaping_weight_final=8.0,
             reward_shaping_decay_steps=10000,
         ),
         seed=seed,
@@ -1312,8 +1352,10 @@ def _run_transfer(
                 fcsd_min=info.get("fcsd_min", 1.0),
                 constraint_cost=info.get("constraint_violation", 0.0),
             )
-            if total_steps >= 500:
-                batch = source_buffer.sample(128)
+            # Update every 16 steps, aligned with scratch loop (line ~383).
+            # batch_size=256 matches scratch for comparable gradient variance.
+            if total_steps >= 500 and total_steps % 16 == 0:
+                batch = source_buffer.sample(256)
                 source_agent.update(batch, total_steps)
             obs = next_obs
             total_steps += 1
@@ -1356,19 +1398,20 @@ def _run_transfer(
         algorithm=AlgorithmConfig(
             name="hfg_sac",
             hidden_dims=[256, 256],
-            batch_size=128,
+            batch_size=256,
             buffer_size=int(1e5),
             warmup_steps=500,
             eval_interval=2000,
             log_interval=500,
         ),
         fuzzy=FuzzyConfig(
-            num_rules=16,
+            num_rules=8,
             num_inputs=8 if target_cfg["env_mode"] == "grid_connected" else 9,
-            fcsd_target=0.85,
+            fcsd_target=0.90,
             use_expert_rules=True,
-            reward_shaping_weight_init=0.3,
-            reward_shaping_weight_final=0.01,
+            # Synced with RQ4-tuned scratch weights (see source comment above).
+            reward_shaping_weight_init=150.0,
+            reward_shaping_weight_final=8.0,
             reward_shaping_decay_steps=10000,
         ),
         seed=seed,
@@ -1425,17 +1468,22 @@ def _run_transfer(
     # decaying schedule that is strong during early fine-tuning (when the
     # transferred policy is least familiar with the target constraint) and
     # fades to zero once the policy has adapted.
-    m4_beta_init = 0.3
+    # M4 v2: trigger on HARD safety boundaries (soc_min/max), not economic
+    # optimal band.  The previous version used soc_optimal [0.4,0.7] which
+    # made M4 fire during normal economic operation (SOC 0.2-0.4 or 0.7-0.9
+    # is still safe), causing corrective bias that fought the source policy
+    # and increased hard violations.
+    m4_beta_init = 0.15
     m4_decay_frac = 0.10  # fraction of fine-tuning window over which beta decays 20x
     m4_beta_decay_steps = max(n_episodes * steps_per_episode * m4_decay_frac, 1)
     m4_beta_nu = float(np.log(20.0) / m4_beta_decay_steps)
     m4_is_island = (target_cfg["env_mode"] == "islanded")
-    m4_soc_min = float(target_env_cfg.soc_optimal_min)
-    m4_soc_max = float(target_env_cfg.soc_optimal_max)
+    m4_soc_min = float(target_env_cfg.soc_min)
+    m4_soc_max = float(target_env_cfg.soc_max)
     m4_freq_threshold = 0.85
-    print(f"    M4: violation-triggered corrective, beta_init={m4_beta_init}, "
+    print(f"    M4 v2: violation-triggered corrective, beta_init={m4_beta_init}, "
           f"decay over ~{m4_beta_decay_steps} steps, "
-          f"soc=[{m4_soc_min},{m4_soc_max}], freq_thresh={m4_freq_threshold} (island={m4_is_island})")
+          f"soc_hard=[{m4_soc_min},{m4_soc_max}], freq_thresh={m4_freq_threshold} (island={m4_is_island})")
 
     # Fine-tuning
     target_buffer = ReplayBuffer(target_obs_dim, target_act_dim, int(1e5), device)
@@ -1506,8 +1554,9 @@ def _run_transfer(
                 constraint_cost=info.get("constraint_violation", 0.0),
             )
 
-            if total_steps >= 200:
-                batch = target_buffer.sample(128)
+            # Update every 16 steps, aligned with scratch loop.
+            if total_steps >= 200 and total_steps % 16 == 0:
+                batch = target_buffer.sample(256)
                 target_agent.update(batch, total_steps)
 
             episode_reward += reward
@@ -1536,10 +1585,11 @@ def _run_transfer(
         "dims_match": dims_match,
     }
 
-    final_eval = evaluate_agent(target_agent, target_env, n_episodes=10)
+    final_eval = evaluate_agent(target_agent, target_env, n_episodes=10, fcsd_target=0.90)
     result.total_cost = final_eval["cost_mean"]
     result.cost_per_day = final_eval["cost_mean"] / 7.0
     result.violation_rate = final_eval["violation_rate_mean"]
+    result.soft_violation_rate = final_eval["soft_violation_rate_mean"]
     result.avg_fcsd = final_eval["fcsd_mean"]
     result.min_fcsd = final_eval["fcsd_min"]
     result.final_reward = final_eval["reward_mean"]
