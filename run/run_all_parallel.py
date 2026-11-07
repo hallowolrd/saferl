@@ -42,9 +42,9 @@ N_EPISODES = 200
 
 # Which RQs to run (comment out / remove to skip)
 ENABLED_RQS = {
-    "rq1": True,   # Main comparison: 6 algos x 4 scenarios x 5 seeds = 120 runs
-    "rq2": True,   # Robustness: 5 algos x 7 extremity levels x 5 seeds = 175 runs
-    "rq3": True,   # Transfer: T2+T4, 6 arms each x 5 seeds = 60 runs (incl. no_M1/no_M4)
+    "rq1": False,   # Main comparison: 6 algos x 4 scenarios x 5 seeds = 120 runs
+    "rq2": False,   # Robustness: 5 algos x 7 extremity levels x 5 seeds = 175 runs
+    "rq3": False,   # Transfer: T2+T4, 6 arms each x 5 seeds = 60 runs (incl. no_M1/no_M4)
     "rq4": True,   # Ablation: 4 variants on S4 x 5 seeds = 20 runs
     "rq5": False,  # Sensitivity: 1 axis x 5 values x 5 seeds = 25 runs
 }
@@ -58,7 +58,7 @@ SKIP_EXISTING = False
 N_WORKERS = 6
 
 # Output directory
-OUTPUT_DIR = ROOT / "outputs" / "experiments"
+OUTPUT_DIR = ROOT / "outputs" / "rq4"
 
 # Device: "auto" | "cpu" | "cuda"
 # CPU is faster for these tiny models (256x256 MLP, 8-9 dim input) —
