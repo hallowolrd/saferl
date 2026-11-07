@@ -121,8 +121,9 @@ SLOPE_LABEL_Y = {
     "ppo_lagrangian": 0.277,
 }
 
-# Slightly enlarged single-panel layout, with the right-side whitespace reduced.
-FIGSIZE = (10.6, 7.45)
+# Match the axes-box aspect ratio of each panel in RQ2 Figure 1 (about 2.04:1).
+# Keep the existing width and reduce the height to obtain the same wide panel shape.
+FIGSIZE = (10.6, 5.66)
 
 OUTPUT_STEM = "rq2_figure_03_violation_growth"
 
@@ -275,7 +276,7 @@ def configure_plot_style() -> None:
         "xtick.labelsize": 21,
         "ytick.labelsize": 21,
         "legend.fontsize": 19,
-        "axes.linewidth": 1.2,
+        "axes.linewidth": 2.0,
         "xtick.direction": "in",
         "ytick.direction": "in",
         "xtick.major.width": 1.0,
@@ -362,8 +363,8 @@ def plot_degradation_curve(summary: dict, output_dir: Path) -> None:
 
     # Tighter x-range: the final data point is at xi=1.5.
     # This keeps a small safety margin while reducing unused space on the right.
-    ax.set_xlim(0.77, 1.52)
-    ax.set_xticks([0.8, 1.0, 1.2, 1.4, 1.5])
+    ax.set_xlim(0.76, 1.54)
+    ax.set_xticks(np.arange(0.8, 1.51, 0.1))
 
     # Reduce unused space below zero while retaining the lower confidence band.
     ax.set_ylim(-12, 103.5)
@@ -373,26 +374,26 @@ def plot_degradation_curve(summary: dict, output_dir: Path) -> None:
         which="major",
         axis="both",
         linestyle="-",
-        linewidth=0.55,
+        linewidth=0.45,
         color="#D9D9D9",
-        alpha=0.65,
+        alpha=0.48,
         zorder=0,
     )
     ax.set_axisbelow(True)
 
     for spine in ax.spines.values():
-        spine.set_linewidth(1.1)
+        spine.set_linewidth(2.0)
         spine.set_color("black")
 
     ax.tick_params(
         axis="both",
         which="major",
         direction="in",
-        width=1.0,
-        length=3.5,
+        width=0.9,
+        length=3.0,
         top=True,
         right=True,
-        pad=5,
+        pad=3,
     )
 
     # -------------------------------------------------------------
@@ -482,11 +483,12 @@ def plot_degradation_curve(summary: dict, output_dir: Path) -> None:
         )
 
     # Keep the plotting panel large while preserving room for axis labels.
+    # Use the same outer margins as the RQ2 Figure 1 reference script.
     fig.subplots_adjust(
-        left=0.12,
-        right=0.99,
-        bottom=0.145,
-        top=0.985,
+        left=0.118,
+        right=0.986,
+        bottom=0.18,
+        top=0.975,
     )
 
     png_path = output_dir / f"{OUTPUT_STEM}.png"
